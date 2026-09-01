@@ -7,7 +7,11 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 
 interface StepItem {
   id: string;
@@ -573,10 +577,17 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     });
   }
 
+  function hideLiveWidget(ctx: ExtensionContext) {
+    withLiveUi(ctx, () => {
+      ctx.ui.setWidget(LIVE_WIDGET, undefined);
+    });
+  }
+
   function bindCtrlO(ctx: ExtensionContext) {
     unsubTerminalInput?.();
     if (!ctx.hasUI) return;
     unsubTerminalInput = ctx.ui.onTerminalInput((data) => {
+      if (!state.isAgentRunning) return;
       if (matchesKey(data, "ctrl+o")) {
         toggleProcessExpanded(ctx);
         return { consume: true };
@@ -913,11 +924,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.maxVisibleLines = loaded.maxVisibleLines;
     state.localePref = loaded.locale;
     state.style = loaded.style;
-    showLiveWidget(ctx);
+    hideLiveWidget(ctx);
     bindCtrlO(ctx);
   });
 
-  pi.on("agent_start", () => {
+  pi.on("agent_start", (_event, ctx) => {
     persistCurrentRun();
     state.isAgentRunning = true;
     state.workingStartedAt = Date.now();
@@ -926,6 +937,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.entryCreated = false;
     state.thoughtBuffer = "";
     state.lastThoughtHeading = "";
+    state.processExpanded = false;
+    showLiveWidget(ctx);
   });
 
   function abortRunningSteps() {
@@ -939,11 +952,13 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.thoughtBuffer = "";
   }
 
-  pi.on("agent_end", () => {
+  pi.on("agent_end", (_event, ctx) => {
     abortRunningSteps();
     persistCurrentRun();
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
+    state.processExpanded = false;
+    hideLiveWidget(ctx);
   });
 
   pi.on("tool_execution_start", (event) => {

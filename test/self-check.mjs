@@ -49,7 +49,7 @@ assert.doesNotMatch(src, /setWorkingVisible\(false\)/);
 assert.doesNotMatch(src, /ensureNativeExpandRemap/);
 assert.doesNotMatch(src, /AssistantMessageComponent/);
 assert.doesNotMatch(src, /pi\.appendEntry/);
-assert.doesNotMatch(src, /setWidget\(LIVE_WIDGET, undefined\)/);
+assert.match(src, /setWidget\(LIVE_WIDGET, undefined\)/);
 
 const handlers = new Map();
 const uiCalls = [];
@@ -65,10 +65,7 @@ const pi = {
 };
 
 const require = createRequire(import.meta.url);
-process.env.NODE_PATH = join(
-  process.env.HOME,
-  ".pi/agent/npm/node_modules",
-);
+process.env.NODE_PATH = join(process.env.HOME, ".pi/agent/npm/node_modules");
 require("module").Module._initPaths();
 
 const ext = await import(
@@ -104,33 +101,30 @@ const ctx = {
 
 handlers.get("session_start")({}, ctx);
 assert.ok(ctx._input, "ctrl+o intercept must bind");
-assert.ok(widget, "widget mounts once on session_start");
-const idle = widget.render(80);
+assert.equal(widget, undefined, "no empty box before a run");
+assert.equal(ctx._input("\x0f"), undefined, "idle ctrl+o is not consumed");
 
 handlers.get("agent_start")({}, ctx);
-assert.equal(uiCalls.filter((c) => c[0] === "appendEntry").length, 0);
-assert.equal(
-  uiCalls.filter((c) => c[0] === "setWidget" && c[2] === true).length,
-  1,
-  "must not remount widget on agent_start",
-);
+assert.ok(widget, "widget mounts on agent_start");
 const collapsed = widget.render(80);
-assert.equal(collapsed.length, idle.length, "idle and running collapsed height must match");
+assert.ok(collapsed.length >= 3);
 
 const consumed = ctx._input("\x0f");
 assert.equal(consumed?.consume, true);
 assert.ok(matchesKey("\x0f", "ctrl+o"));
-assert.ok(uiCalls.some((c) => c[0] === "notify"), "ctrl+o must notify/toggle");
+assert.ok(
+  uiCalls.some((c) => c[0] === "notify"),
+  "ctrl+o must notify/toggle",
+);
 const expanded = widget.render(80);
-assert.notEqual(expanded.length, collapsed.length, "ctrl+o must change box height");
+assert.notEqual(
+  expanded.length,
+  collapsed.length,
+  "ctrl+o must change box height",
+);
 
 handlers.get("agent_end")({}, ctx);
+assert.equal(widget, undefined, "widget unmounts after agent_end");
 assert.equal(uiCalls.filter((c) => c[0] === "appendEntry").length, 0);
-assert.ok(widget, "widget stays after agent_end");
-assert.equal(
-  uiCalls.filter((c) => c[0] === "setWidget" && c[2] === false).length,
-  0,
-  "must not unmount widget",
-);
 
 console.log("self-check ok");
