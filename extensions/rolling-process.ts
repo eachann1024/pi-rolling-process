@@ -7,7 +7,7 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 interface StepItem {
   id: string;
@@ -550,6 +550,40 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     }
   }
 
+  const LIVE_WIDGET = "pi-minimal-mode";
+  let unsubTerminalInput: (() => void) | undefined;
+
+  function showLiveWidget(ctx: ExtensionContext) {
+    withLiveUi(ctx, () => {
+      ctx.ui.setWidget(
+        LIVE_WIDGET,
+        (_tui, theme) => ({
+          render: (width: number) =>
+            renderProcess(
+              state.steps,
+              width,
+              theme,
+              state.processExpanded,
+              true,
+            ),
+          invalidate: () => {},
+        }),
+        { placement: "aboveEditor" },
+      );
+    });
+  }
+
+  function bindCtrlO(ctx: ExtensionContext) {
+    unsubTerminalInput?.();
+    if (!ctx.hasUI) return;
+    unsubTerminalInput = ctx.ui.onTerminalInput((data) => {
+      if (matchesKey(data, "ctrl+o")) {
+        toggleProcessExpanded(ctx);
+        return { consume: true };
+      }
+    });
+  }
+
   function persistCurrentRun() {
     if (!state.runId || state.steps.length === 0) return;
     state.snapshots.set(state.runId, cloneSteps(state.steps));
@@ -722,12 +756,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     return [top, ...framed, bottom];
   }
 
-  function ensureTranscriptEntry() {
-    if (state.entryCreated || !state.runId) return;
-    state.entryCreated = true;
-    pi.appendEntry<RunSnapshot>(ENTRY_TYPE, { runId: state.runId, steps: [] });
-  }
-
   function tick() {
     state.spinnerFrame = (state.spinnerFrame + 1) % SPINNER_FRAMES.length;
   }
@@ -749,7 +777,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         status: "running",
         startTime: Date.now(),
       });
-      ensureTranscriptEntry();
     }
     tick();
   }
@@ -866,6 +893,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
+    unsubTerminalInput?.();
+    unsubTerminalInput = undefined;
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
     state.steps = [];
@@ -873,7 +902,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.entryCreated = false;
   });
 
-  pi.on("session_start", () => {
+  pi.on("session_start", (_event, ctx) => {
     state.steps = [];
     state.runId = "";
     state.entryCreated = false;
@@ -884,6 +913,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.maxVisibleLines = loaded.maxVisibleLines;
     state.localePref = loaded.locale;
     state.style = loaded.style;
+    showLiveWidget(ctx);
+    bindCtrlO(ctx);
   });
 
   pi.on("agent_start", () => {
@@ -895,11 +926,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.entryCreated = false;
     state.thoughtBuffer = "";
     state.lastThoughtHeading = "";
-  });
-
-  pi.on("message_end", (event) => {
-    if (!state.isAgentRunning || event.message?.role !== "user") return;
-    ensureTranscriptEntry();
   });
 
   function abortRunningSteps() {
@@ -918,7 +944,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     persistCurrentRun();
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
-    ensureTranscriptEntry();
   });
 
   pi.on("tool_execution_start", (event) => {
@@ -935,7 +960,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       status: "running",
       startTime: Date.now(),
     });
-    ensureTranscriptEntry();
     tick();
   });
 
