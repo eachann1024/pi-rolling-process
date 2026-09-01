@@ -73,7 +73,8 @@ const SNAP_PATH = join(getAgentDir(), "rolling-process-runs.json");
 const TICK_WIDGET = "pi-rolling-process-tick";
 const DURATION_COL = 6;
 const ICON_COL = 2;
-const SPINNER_FRAMES = ["🟡", "🟠", "🟡", "⚪"];
+// One dot walking a 2×2 square on braille rows 2–3 (one row lower than the 2×3 spinner).
+const SPINNER_FRAMES = ["⠂", "⠐", "⠠", "⠄"];
 
 const DEFAULT_STYLE: ProcessStyle = {
   preset: "box",
@@ -83,7 +84,7 @@ const DEFAULT_STYLE: ProcessStyle = {
   showKind: true,
   showDuration: true,
   showResult: true,
-  icons: { done: "✅", error: "❌", running: "🟡", aborted: "⚠️" },
+  icons: { done: "✅", error: "❌", running: "⠂", aborted: "⚠️" },
   colors: { border: "border", header: "dim", kind: "muted", duration: "success", done: "success", error: "error", running: "warning", aborted: "warning" },
 };
 
@@ -95,19 +96,19 @@ const BORDERS: Record<Exclude<BorderStyle, "none">, { tl: string; tr: string; bl
 
 const I18N = {
   zh: {
-    title: "执行过程",
+    title: "极简模式",
     folded: (n: number) => `已折叠 ${n}`,
-    expandHint: "ctrl+o 展开",
-    collapseHint: "ctrl+o 收起",
+    expandHint: "ctrl+o 展开 ctrl+alt+o 原始展开",
+    collapseHint: "ctrl+o 收起 ctrl+alt+o 原始展开",
     thought: "思考",
     more: (n: number) => `··· +${n}`,
     linesOut: (n: number) => `${n} 行`,
     expanded: "已展开全部步骤",
     collapsed: (n: number) => `已收起（最新 ${n} 条）`,
     linesSet: (n: number) => `收起时显示最新 ${n} 条`,
-    linesHelp: "请输入 1 到 20，例如: /process-lines 8",
-    cmdProcess: "展开/收起执行过程（ctrl+o；原生工具展开为 ctrl+alt+o）",
-    cmdLines: "设置收起时显示的条数（默认 8）",
+    linesHelp: "请输入 1 到 20，例如: /process-lines 6",
+    cmdProcess: "展开/收起极简模式（ctrl+o；原生工具展开为 ctrl+alt+o）",
+    cmdLines: "设置收起时显示的条数（默认 6）",
     working: "执行中",
     cmdLang: "界面语言：auto / zh / en",
     langSet: (v: string) => `界面语言已设为 ${v}`,
@@ -118,19 +119,19 @@ const I18N = {
     styleHelp: "用法: /process-style box|panel|plain  或  /process-style border single|rounded|double",
   },
   en: {
-    title: "process",
+    title: "Minimal",
     folded: (n: number) => `${n} hidden`,
-    expandHint: "ctrl+o expand",
-    collapseHint: "ctrl+o collapse",
+    expandHint: "ctrl+o expand ctrl+alt+o raw expand",
+    collapseHint: "ctrl+o collapse ctrl+alt+o raw expand",
     thought: "think",
     more: (n: number) => `··· +${n}`,
     linesOut: (n: number) => `${n} lines`,
     expanded: "Process expanded",
     collapsed: (n: number) => `Collapsed (latest ${n})`,
     linesSet: (n: number) => `Collapsed view shows latest ${n}`,
-    linesHelp: "Enter 1-20, e.g. /process-lines 8",
-    cmdProcess: "Expand/collapse process (ctrl+o; native tool dump is ctrl+alt+o)",
-    cmdLines: "Rows shown when collapsed (default 8)",
+    linesHelp: "Enter 1-20, e.g. /process-lines 6",
+    cmdProcess: "Expand/collapse Minimal mode (ctrl+o; native tool dump is ctrl+alt+o)",
+    cmdLines: "Rows shown when collapsed (default 6)",
     working: "working",
     cmdLang: "UI language: auto / zh / en",
     langSet: (v: string) => `UI language set to ${v}`,
@@ -218,8 +219,12 @@ function padDuration(text: string): string {
 }
 
 function padIcon(text: string): string {
-  const pad = Math.max(0, ICON_COL - visibleWidth(text));
-  return text + " ".repeat(pad);
+  const w = visibleWidth(text);
+  if (w >= ICON_COL) return text;
+  const gap = ICON_COL - w;
+  const left = Math.ceil(gap / 2);
+  const right = gap - left;
+  return " ".repeat(left) + text + " ".repeat(right);
 }
 
 function stepDurationText(step: StepItem): string {
@@ -321,7 +326,7 @@ function parseStyle(raw: unknown): ProcessStyle {
 }
 
 function loadConfig(): ProcessConfig {
-  const fallback: ProcessConfig = { maxVisibleLines: 8, locale: "auto", style: { ...DEFAULT_STYLE, icons: { ...DEFAULT_STYLE.icons }, colors: { ...DEFAULT_STYLE.colors } } };
+  const fallback: ProcessConfig = { maxVisibleLines: 6, locale: "auto", style: { ...DEFAULT_STYLE, icons: { ...DEFAULT_STYLE.icons }, colors: { ...DEFAULT_STYLE.colors } } };
   try {
     const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
       maxVisibleLines?: unknown;
@@ -684,13 +689,10 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   function renderProcess(steps: StepItem[], width: number, theme: Theme, expanded: boolean, live: boolean): string[] {
     const ui = t();
     const style = state.style;
-    const visible = [...(expanded ? steps : steps.slice(-state.maxVisibleLines))];
-    const hiddenCount = Math.max(0, steps.length - visible.length);
-    const lines: string[] = [];
-
-    const hasRunning = steps.some((step) => step.status === "running");
+    const list = [...steps];
+    const hasRunning = list.some((step) => step.status === "running");
     if (live && state.isAgentRunning && !hasRunning) {
-      visible.push({
+      list.push({
         id: "working",
         index: steps.length + 1,
         type: "thought",
@@ -700,9 +702,13 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         startTime: state.workingStartedAt ?? Date.now(),
       });
     }
+    const visible = expanded ? list : list.slice(-state.maxVisibleLines);
+    const realShown = visible.filter((step) => step.id !== "working").length;
+    const hiddenCount = Math.max(0, steps.length - realShown);
+    const lines: string[] = [];
 
     if (style.showHeader) {
-      const shown = expanded ? steps.length : Math.min(state.maxVisibleLines, steps.length);
+      const shown = expanded ? steps.length : realShown;
       const count = `${shown}/${steps.length}`;
       const parts = [`${ui.title} ${count}`];
       if (!expanded && hiddenCount > 0) parts.push(ui.folded(hiddenCount));
@@ -735,6 +741,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       const extra =
         style.showResult && step.resultSummary ? paintFg(theme, "dim", `${preview ? " -> " : ""}${step.resultSummary}`) : "";
       lines.push(`${durCol} ${icon} ${kind}${index}${preview}${extra}`);
+    }
+
+    if (live && !expanded) {
+      const header = style.showHeader ? 1 : 0;
+      while (lines.length - header < state.maxVisibleLines) lines.push("");
     }
 
     if (lines.length === 0) return [];

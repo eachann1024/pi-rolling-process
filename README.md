@@ -1,11 +1,11 @@
 **English** · [简体中文](README.zh-CN.md)
 
-# pi-rolling-process
+# pi-minimal-mode
 
-Rolling process viewport for [Pi](https://pi.dev). Latest steps stay in a fixed box; older ones roll off. The answer appears below after the run.
+Minimal mode for [Pi](https://pi.dev). Latest steps stay in a fixed box; older ones roll off. The answer appears below after the run.
 
 ```text
-┌─ process 5/118 · 113 hidden · ctrl+o expand ─
+┌─ Minimal 5/118 · 113 hidden · ctrl+o expand ctrl+alt+o raw expand ─
 │ ❌ read /tmp/foo.ts
 │ ✅ think validation passed 2.8s
 │ ✅ find "_tmp_repro" . -> 5 lines 2ms
@@ -18,7 +18,7 @@ Requires Pi **>= 0.84.0**. Conflicts with `pi-compact-transcript` — uninstall 
 ## Install
 
 ```bash
-pi install npm:pi-rolling-process
+pi install npm:pi-minimal-mode
 # or
 pi install git:github.com/eachann1024/pi-rolling-process
 ```
@@ -37,7 +37,7 @@ Then `/reload`.
 
 ```text
 /process                      expand / collapse
-/process-lines 8              collapsed row count (1–20)
+/process-lines 6              collapsed row count (1–20)
 /process-lang auto            auto | zh | en
 /process-style                show current style
 /process-style box            box | panel | plain
@@ -50,7 +50,7 @@ Then `/reload`.
 
 ```json
 {
-  "maxVisibleLines": 8,
+  "maxVisibleLines": 6,
   "locale": "auto",
   "style": {
     "preset": "box",

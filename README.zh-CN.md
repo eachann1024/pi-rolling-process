@@ -1,11 +1,11 @@
 [English](README.md) · **简体中文**
 
-# pi-rolling-process
+# pi-minimal-mode（极简模式）
 
-[Pi](https://pi.dev) 的滚动执行过程视口。固定框里只留最近步骤，旧的被顶掉。最终回答出现在框下方。
+[Pi](https://pi.dev) 的极简模式。固定框里只留最近步骤，旧的被顶掉。最终回答出现在框下方。
 
 ```text
-┌─ 执行过程 5/118 · 已折叠 113 · ctrl+o 展开 ─
+┌─ 极简模式 5/118 · 已折叠 113 · ctrl+o 展开 ctrl+alt+o 原始展开 ─
 │ ❌ 读取 /tmp/foo.ts
 │ ✅ 思考 验证完成 2.8s
 │ ✅ 查找 "_tmp_repro" . -> 5 行 2ms
@@ -18,7 +18,7 @@
 ## 安装
 
 ```bash
-pi install npm:pi-rolling-process
+pi install npm:pi-minimal-mode
 # 或
 pi install git:github.com/eachann1024/pi-rolling-process
 ```
@@ -37,7 +37,7 @@ pi install git:github.com/eachann1024/pi-rolling-process
 
 ```text
 /process                      展开 / 收起
-/process-lines 8              收起时条数（1–20）
+/process-lines 6              收起时条数（1–20）
 /process-lang auto            auto | zh | en
 /process-style                查看当前样式
 /process-style box            box | panel | plain
@@ -50,7 +50,7 @@ pi install git:github.com/eachann1024/pi-rolling-process
 
 ```json
 {
-  "maxVisibleLines": 8,
+  "maxVisibleLines": 6,
   "locale": "auto",
   "style": {
     "preset": "box",
