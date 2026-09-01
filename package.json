@@ -1,0 +1,38 @@
+{
+  "name": "pi-rolling-process",
+  "version": "1.0.0",
+  "description": "Concise rolling process viewport for pi: last N tool/thought steps, ctrl+o to expand, no Thinking/Working chrome.",
+  "type": "module",
+  "license": "MIT",
+  "author": "eachann1024",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eachann1024/pi-rolling-process.git"
+  },
+  "bugs": {
+    "url": "https://github.com/eachann1024/pi-rolling-process/issues"
+  },
+  "homepage": "https://github.com/eachann1024/pi-rolling-process#readme",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "pi-extension",
+    "transcript",
+    "tui"
+  ],
+  "pi": {
+    "extensions": ["./extensions/rolling-process.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
+    "@earendil-works/pi-tui": "*"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
