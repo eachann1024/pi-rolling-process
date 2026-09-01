@@ -1,86 +1,98 @@
+**English** · [简体中文](README.zh-CN.md)
+
 # pi-rolling-process
 
-A concise process viewport for [pi](https://pi.dev).
-
-While the agent works, only the latest few tool/thought steps stay on screen. Older steps roll off. Final answer streams underneath. `ctrl+o` expands or collapses the full list.
+Rolling process viewport for [Pi](https://pi.dev). Latest steps stay in a fixed box; older ones roll off. The answer appears below after the run.
 
 ```text
-  ··· +4
-  ✓ grep "herdr" .  86 lines
-  ⠋ $ find / -iname '*herdr*'
-  · checking installed packages
+┌─ process 5/118 · 113 hidden · ctrl+o expand ─
+│ ❌ read /tmp/foo.ts
+│ ✅ think validation passed 2.8s
+│ ✅ find "_tmp_repro" . -> 5 lines 2ms
+│ 🟡 think checking remaining matches
+└──────────────────────────────────────────────
 ```
 
-Then the assistant reply continues below.
+Requires Pi **>= 0.84.0**. Conflicts with `pi-compact-transcript` — uninstall that package first.
 
 ## Install
 
 ```bash
 pi install npm:pi-rolling-process
-```
-
-Git:
-
-```bash
+# or
 pi install git:github.com/eachann1024/pi-rolling-process
-```
-
-Try once:
-
-```bash
-pi -e npm:pi-rolling-process
 ```
 
 Then `/reload`.
 
-Recommended with:
+## Shortcuts
 
-```json
-{
-  "hideThinkingBlock": true,
-  "outputPad": 0
-}
-```
-
-If you already use `pi-compact-transcript`, turn it off so the two views do not stack:
-
-```text
-/compact-transcript off
-```
-
-Or `~/.pi/agent/compact-transcript.json`:
-
-```json
-{ "enabled": false }
-```
-
-## Behavior
-
-- Hides `Thinking...` labels and the `Working ...` row
-- Hides per-tool transcript dumps (the rolling list replaces them)
-- Collapsed view shows the latest **5** steps (configurable)
-- `ctrl+o` (pi's tool expand) also expands this list
-- Next prompt starts counting from the first step again
-- UI language follows the system (`zh` / `en`), override with `/process-lang`
+| Key | Action |
+| --- | --- |
+| `ctrl+o` | Expand / collapse this process list |
+| `ctrl+alt+o` | Pi native tool dump |
+| `/process` | Same as `ctrl+o` |
 
 ## Commands
 
 ```text
-/process              # expand/collapse (same as ctrl+o)
-/process-lines 5      # collapsed row count (1-20)
-/process-lang auto    # auto | zh | en
+/process                      expand / collapse
+/process-lines 8              collapsed row count (1–20)
+/process-lang auto            auto | zh | en
+/process-style                show current style
+/process-style box            box | panel | plain
+/process-style border rounded single | rounded | double | none
 ```
 
 ## Config
 
-`~/.pi/agent/rolling-process.json`:
+`~/.pi/agent/rolling-process.json`
 
 ```json
 {
-  "maxVisibleLines": 5,
-  "locale": "auto"
+  "maxVisibleLines": 8,
+  "locale": "auto",
+  "style": {
+    "preset": "box",
+    "border": "single",
+    "showHeader": true,
+    "showStepIndex": false,
+    "showKind": true,
+    "showDuration": true,
+    "showResult": true,
+    "icons": {
+      "done": "✅",
+      "error": "❌",
+      "running": "🟡",
+      "aborted": "⚠️"
+    },
+    "colors": {
+      "border": "border",
+      "header": "dim",
+      "kind": "muted",
+      "duration": "success",
+      "done": "success",
+      "error": "error",
+      "running": "warning",
+      "aborted": "warning"
+    }
+  }
 }
 ```
+
+`locale: "auto"` follows the system (`zh` / `en`). `/process-lang` overrides it.
+
+### Style
+
+| `preset` | |
+| --- | --- |
+| `box` | Line frame + header (default) |
+| `panel` | Solid tool-card background |
+| `plain` | No frame |
+
+| `border` (box only) | `single` `┌` · `rounded` `╭` · `double` `╔` · `none` |
+
+Icons are characters. `colors` are Pi theme names (`success`, `error`, `warning`, `muted`, `dim`, `border`, …).
 
 ## License
 

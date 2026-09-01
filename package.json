@@ -1,7 +1,7 @@
 {
   "name": "pi-rolling-process",
-  "version": "1.0.1",
-  "description": "Concise rolling process viewport for pi: last N tool/thought steps, ctrl+o to expand, no Thinking/Working chrome.",
+  "version": "1.0.3",
+  "description": "Concise rolling process viewport for pi: last N tool/thought steps, ctrl+o to expand process, ctrl+alt+o for native tool dumps.",
   "type": "module",
   "license": "MIT",
   "author": "eachann1024",
@@ -30,6 +30,7 @@
   "files": [
     "extensions",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "publishConfig": {
