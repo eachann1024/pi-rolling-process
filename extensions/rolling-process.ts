@@ -554,40 +554,19 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     }
   }
 
-  const LIVE_WIDGET = "pi-minimal-mode";
   let unsubTerminalInput: (() => void) | undefined;
 
-  function showLiveWidget(ctx: ExtensionContext) {
-    withLiveUi(ctx, () => {
-      ctx.ui.setWidget(
-        LIVE_WIDGET,
-        (_tui, theme) => ({
-          render: (width: number) =>
-            renderProcess(
-              state.steps,
-              width,
-              theme,
-              state.processExpanded,
-              true,
-            ),
-          invalidate: () => {},
-        }),
-        { placement: "aboveEditor" },
-      );
-    });
-  }
-
-  function hideLiveWidget(ctx: ExtensionContext) {
-    withLiveUi(ctx, () => {
-      ctx.ui.setWidget(LIVE_WIDGET, undefined);
-    });
+  function ensureTranscriptEntry() {
+    if (state.entryCreated || !state.runId) return;
+    state.entryCreated = true;
+    pi.appendEntry<RunSnapshot>(ENTRY_TYPE, { runId: state.runId, steps: [] });
   }
 
   function bindCtrlO(ctx: ExtensionContext) {
     unsubTerminalInput?.();
     if (!ctx.hasUI) return;
     unsubTerminalInput = ctx.ui.onTerminalInput((data) => {
-      if (!state.isAgentRunning) return;
+      if (!state.isAgentRunning && !state.entryCreated) return;
       if (matchesKey(data, "ctrl+o")) {
         toggleProcessExpanded(ctx);
         return { consume: true };
@@ -788,6 +767,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         status: "running",
         startTime: Date.now(),
       });
+      ensureTranscriptEntry();
     }
     tick();
   }
@@ -924,11 +904,10 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.maxVisibleLines = loaded.maxVisibleLines;
     state.localePref = loaded.locale;
     state.style = loaded.style;
-    hideLiveWidget(ctx);
     bindCtrlO(ctx);
   });
 
-  pi.on("agent_start", (_event, ctx) => {
+  pi.on("agent_start", () => {
     persistCurrentRun();
     state.isAgentRunning = true;
     state.workingStartedAt = Date.now();
@@ -938,7 +917,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.thoughtBuffer = "";
     state.lastThoughtHeading = "";
     state.processExpanded = false;
-    showLiveWidget(ctx);
+  });
+
+  pi.on("message_end", (event) => {
+    if (!state.isAgentRunning || event.message?.role !== "user") return;
+    ensureTranscriptEntry();
   });
 
   function abortRunningSteps() {
@@ -952,13 +935,12 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.thoughtBuffer = "";
   }
 
-  pi.on("agent_end", (_event, ctx) => {
+  pi.on("agent_end", () => {
     abortRunningSteps();
     persistCurrentRun();
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
-    state.processExpanded = false;
-    hideLiveWidget(ctx);
+    ensureTranscriptEntry();
   });
 
   pi.on("tool_execution_start", (event) => {
@@ -975,6 +957,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       status: "running",
       startTime: Date.now(),
     });
+    ensureTranscriptEntry();
     tick();
   });
 
