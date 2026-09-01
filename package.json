@@ -1,6 +1,6 @@
 {
   "name": "pi-minimal-mode",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Minimal mode for pi: last N tool/thought steps, hide thinking chrome, ctrl+o to expand process, ctrl+alt+o for native tool dumps.",
   "type": "module",
   "license": "MIT",

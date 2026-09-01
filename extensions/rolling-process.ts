@@ -6,19 +6,8 @@ import type {
   ExtensionContext,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import {
-  AssistantMessageComponent,
-  getAgentDir,
-  ToolExecutionComponent,
-} from "@earendil-works/pi-coding-agent";
-import {
-  Markdown,
-  Spacer,
-  Text,
-  matchesKey,
-  truncateToWidth,
-  visibleWidth,
-} from "@earendil-works/pi-tui";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 interface StepItem {
   id: string;
@@ -79,23 +68,15 @@ interface ProcessState {
   isAgentRunning: boolean;
   workingStartedAt?: number;
   spinnerFrame: number;
-  spinnerTimer?: ReturnType<typeof setInterval>;
   entryCreated: boolean;
   thoughtBuffer: string;
   lastThoughtHeading: string;
-  hideTranscriptTools: boolean;
   processExpanded: boolean;
-  holdScroll: boolean;
-  tui?: { requestRender: () => void; isFollowingOutput?: boolean };
 }
 
 const ENTRY_TYPE = "pi-rolling-process";
-const HIDE_TOOLS_KEY = Symbol.for("pi-rolling-process.hide-transcript-tools");
-const HIDE_THINKING_KEY = Symbol.for("pi-rolling-process.hide-thinking-labels");
 const CONFIG_PATH = join(getAgentDir(), "rolling-process.json");
-const KEYBINDINGS_PATH = join(getAgentDir(), "keybindings.json");
 const SNAP_PATH = join(getAgentDir(), "rolling-process-runs.json");
-const TICK_WIDGET = "pi-rolling-process-tick";
 const DURATION_COL = 6;
 const ICON_COL = 2;
 // Walking dot around a 2×3 braille cell (rows 1–3, both columns).
@@ -443,65 +424,6 @@ function styleSummary(style: ProcessStyle): string {
   return `${style.preset} · border ${style.border}`;
 }
 
-function asKeyList(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value) && value.every((item) => typeof item === "string"))
-    return value;
-  return [];
-}
-
-function keysInclude(keys: string[], id: string): boolean {
-  return keys.some((key) => key.toLowerCase() === id);
-}
-
-/**
- * Move reserved/overlapping ctrl+o bindings so the process shortcut can own that key.
- * Returns true when native tool-expand is already off ctrl+o (no input intercept needed).
- */
-function ensureNativeExpandRemap(): boolean {
-  let config: Record<string, unknown> = {};
-  try {
-    config = JSON.parse(readFileSync(KEYBINDINGS_PATH, "utf8")) as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    config = {};
-  }
-
-  const expandSpecified = Object.hasOwn(config, "app.tools.expand");
-  const expandKeys = expandSpecified
-    ? asKeyList(config["app.tools.expand"])
-    : ["ctrl+o"];
-  const expandAlreadyOff = !keysInclude(expandKeys, "ctrl+o");
-  if (!expandAlreadyOff) {
-    const next = expandKeys.filter((key) => key.toLowerCase() !== "ctrl+o");
-    if (!keysInclude(next, "ctrl+alt+o")) next.push("ctrl+alt+o");
-    config["app.tools.expand"] = next.length === 1 ? next[0] : next;
-  }
-
-  const treeSpecified = Object.hasOwn(config, "app.tree.filter.cycleForward");
-  const treeKeys = treeSpecified
-    ? asKeyList(config["app.tree.filter.cycleForward"])
-    : ["ctrl+o"];
-  if (keysInclude(treeKeys, "ctrl+o")) {
-    const next = treeKeys.filter((key) => key.toLowerCase() !== "ctrl+o");
-    if (next.length === 0) next.push("alt+o");
-    config["app.tree.filter.cycleForward"] = next.length === 1 ? next[0] : next;
-  }
-
-  try {
-    writeFileSync(
-      KEYBINDINGS_PATH,
-      `${JSON.stringify(config, null, 2)}\n`,
-      "utf8",
-    );
-  } catch {
-    // Input intercept still covers this session.
-  }
-  return expandAlreadyOff;
-}
-
 function loadSnapshots(): Map<string, StepItem[]> {
   const map = new Map<string, StepItem[]>();
   try {
@@ -582,199 +504,7 @@ function getToolPreview(
   }
 }
 
-function patchHideTranscriptTools(enabled: boolean) {
-  // SAFETY: prototype patch; runtime checks render is a function.
-  const proto = ToolExecutionComponent.prototype as unknown as {
-    render: (width: number) => string[];
-    [key: symbol]: unknown;
-  };
-  if (typeof proto.render !== "function") return;
-  const existing = proto[HIDE_TOOLS_KEY] as
-    | { previous: typeof proto.render }
-    | undefined;
-  if (existing) {
-    proto.render = existing.previous;
-    delete proto[HIDE_TOOLS_KEY];
-  }
-  if (!enabled) return;
-  const previous = proto.render;
-  proto.render = function patchedRender(
-    this: { expanded?: boolean },
-    width: number,
-  ) {
-    if (this.expanded) return previous.call(this, width);
-    return [];
-  };
-  proto[HIDE_TOOLS_KEY] = { previous };
-}
-
-function applyMarkdownTransformers(
-  markdown: string,
-  transformers:
-    | Array<
-        (
-          md: string,
-          ctx: {
-            messageType: string;
-            isStreaming: boolean;
-            availableWidth: number;
-          },
-        ) => string
-      >
-    | undefined,
-  isStreaming: boolean,
-  availableWidth: number,
-): string {
-  let out = markdown;
-  for (const transformer of transformers ?? []) {
-    try {
-      const next = transformer(out, {
-        messageType: "assistant",
-        isStreaming,
-        availableWidth,
-      });
-      if (typeof next === "string") out = next;
-    } catch {
-      // keep current
-    }
-  }
-  return out;
-}
-
-type AssistantView = {
-  hideThinkingBlock?: boolean;
-  contentContainer?: { clear: () => void; addChild: (c: unknown) => void };
-  lastMessage?: unknown;
-  isStreaming?: boolean;
-  hasToolCalls?: boolean;
-  outputPad?: number;
-  markdownTheme?: unknown;
-  markdownTransformers?: Array<
-    (
-      md: string,
-      ctx: {
-        messageType: string;
-        isStreaming: boolean;
-        availableWidth: number;
-      },
-    ) => string
-  >;
-  updateContent?: (message: unknown, isStreaming?: boolean) => void;
-};
-
-function isThinkingPart(content: { type?: string }): boolean {
-  const type = content.type ?? "";
-  return (
-    type === "thinking" || type === "reasoning" || type.startsWith("thinking")
-  );
-}
-
-function patchHideThinkingLabels(
-  views: Set<AssistantView>,
-  shouldHideText: (info: {
-    isStreaming: boolean;
-    hasToolCalls: boolean;
-  }) => boolean,
-) {
-  // SAFETY: prototype patch; runtime checks updateContent is a function.
-  const proto = AssistantMessageComponent.prototype as unknown as {
-    updateContent: (message: unknown, isStreaming?: boolean) => void;
-    [key: symbol]: unknown;
-  };
-  if (typeof proto.updateContent !== "function") return;
-  const existing = proto[HIDE_THINKING_KEY] as
-    | { original: typeof proto.updateContent }
-    | undefined;
-  const original = existing?.original ?? proto.updateContent;
-
-  proto.updateContent = function patchedUpdateContent(
-    this: AssistantView,
-    message: {
-      content?: Array<{ type?: string; text?: string }>;
-      stopReason?: string;
-      errorMessage?: string;
-    },
-    isStreaming?: boolean,
-  ) {
-    views.add(this);
-    if (
-      !this.hideThinkingBlock ||
-      !this.contentContainer ||
-      !Array.isArray(message?.content)
-    ) {
-      return original.call(this, message, isStreaming);
-    }
-
-    this.lastMessage = message;
-    this.isStreaming = isStreaming ?? this.isStreaming;
-    this.contentContainer.clear();
-    this.hasToolCalls = message.content.some((c) => c.type === "toolCall");
-
-    const hideText = shouldHideText({
-      isStreaming: this.isStreaming ?? false,
-      hasToolCalls: this.hasToolCalls,
-    });
-    const texts = hideText
-      ? []
-      : message.content.filter(
-          (c) => c.type === "text" && c.text?.trim() && !isThinkingPart(c),
-        );
-    if (texts.length > 0) {
-      this.contentContainer.addChild(new Spacer(1));
-      for (const content of texts) {
-        this.contentContainer.addChild(
-          new Markdown(
-            content.text!.trim(),
-            this.outputPad ?? 0,
-            0,
-            this.markdownTheme as never,
-            undefined,
-            {
-              transform: (markdown: string, availableWidth: number) =>
-                applyMarkdownTransformers(
-                  markdown,
-                  this.markdownTransformers,
-                  this.isStreaming ?? false,
-                  availableWidth,
-                ),
-            },
-          ),
-        );
-      }
-    }
-
-    if (message.stopReason === "length") {
-      this.contentContainer.addChild(new Spacer(1));
-      this.contentContainer.addChild(
-        new Text(
-          "Response was truncated before completion.",
-          this.outputPad ?? 0,
-          0,
-        ),
-      );
-    } else if (
-      texts.length === 0 &&
-      (message.stopReason === "aborted" || message.stopReason === "error")
-    ) {
-      return original.call(this, message, isStreaming);
-    }
-  };
-
-  proto[HIDE_THINKING_KEY] = { original };
-}
-
-function flushAssistantViews(views: Set<AssistantView>) {
-  for (const view of views) {
-    try {
-      if (view.lastMessage) view.updateContent?.(view.lastMessage, false);
-    } catch {
-      views.delete(view);
-    }
-  }
-}
-
 function createRollingProcessExtension(pi: ExtensionAPI) {
-  const nativeExpandLoadedOffCtrlO = ensureNativeExpandRemap();
   const config = loadConfig();
   const state: ProcessState = {
     runId: "",
@@ -788,12 +518,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     entryCreated: false,
     thoughtBuffer: "",
     lastThoughtHeading: "",
-    hideTranscriptTools: true,
     processExpanded: false,
-    holdScroll: false,
   };
-  const assistantViews = new Set<AssistantView>();
-  let unsubTerminalInput: (() => void) | undefined;
 
   function t() {
     return I18N[detectUiLang(state.localePref)];
@@ -822,71 +548,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     } catch {
       // Session was replaced (/new, /reload, fork). Drop the stale ctx.
     }
-  }
-
-  function hideThinkingChrome(ctx: ExtensionContext) {
-    withLiveUi(ctx, () => {
-      ctx.ui.setHiddenThinkingLabel("");
-      ctx.ui.setWidget("rolling-process", undefined);
-    });
-  }
-
-  function hideWorkingChrome(ctx: ExtensionContext) {
-    withLiveUi(ctx, () => {
-      ctx.ui.setWorkingVisible(false);
-    });
-  }
-
-  function captureTui(ctx: ExtensionContext) {
-    if (state.tui) return;
-    withLiveUi(ctx, () => {
-      ctx.ui.setWidget(
-        TICK_WIDGET,
-        (tui) => {
-          state.tui = tui;
-          return { render: () => [], invalidate: () => {} };
-        },
-        { placement: "belowEditor" },
-      );
-    });
-  }
-
-  function isViewportScrollInput(data: string): boolean {
-    return (
-      /\x1b\[<(?:64|65|96|97);/.test(data) ||
-      data.includes("\x1b[5~") ||
-      data.includes("\x1b[6~")
-    );
-  }
-
-  // ponytail: skip plugin redraws after the user scrolls away; Pi follow-end re-latches if we keep requestRender on a tall paste.
-  function requestRender(force = false) {
-    const tui = state.tui;
-    if (!tui) return;
-    if (tui.isFollowingOutput === true) state.holdScroll = false;
-    if (!force && state.holdScroll) return;
-    if (!force && tui.isFollowingOutput === false) return;
-    tui.requestRender();
-  }
-
-  function startSpinner() {
-    if (state.spinnerTimer || !state.isAgentRunning) return;
-    state.spinnerTimer = setInterval(() => {
-      const hasRunning = state.steps.some((step) => step.status === "running");
-      if (!state.isAgentRunning && !hasRunning) {
-        stopSpinner();
-        return;
-      }
-      state.spinnerFrame = (state.spinnerFrame + 1) % SPINNER_FRAMES.length;
-      requestRender();
-    }, 200);
-    state.spinnerTimer.unref?.();
-  }
-
-  function stopSpinner() {
-    if (!state.spinnerTimer) return;
-    clearInterval(state.spinnerTimer);
-    state.spinnerTimer = undefined;
   }
 
   function persistCurrentRun() {
@@ -1067,8 +728,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     pi.appendEntry<RunSnapshot>(ENTRY_TYPE, { runId: state.runId, steps: [] });
   }
 
-  function refresh() {
-    requestRender();
+  function tick() {
+    state.spinnerFrame = (state.spinnerFrame + 1) % SPINNER_FRAMES.length;
   }
 
   function upsertThought(heading: string) {
@@ -1090,7 +751,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       });
       ensureTranscriptEntry();
     }
-    refresh();
+    tick();
   }
 
   function finishRunningThought() {
@@ -1098,7 +759,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     if (last && last.type === "thought" && last.status === "running") {
       last.status = "done";
       last.endTime = Date.now();
-      refresh();
+      tick();
     }
     state.thoughtBuffer = "";
   }
@@ -1115,35 +776,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         );
       });
     }
-    requestRender(true);
-  }
-
-  function toggleNativeToolDump(ctx: ExtensionContext) {
-    withLiveUi(ctx, () => {
-      ctx.ui.setToolsExpanded(!ctx.ui.getToolsExpanded());
-    });
-  }
-
-  function bindTerminalIntercept(ctx: ExtensionContext) {
-    unsubTerminalInput?.();
-    unsubTerminalInput = undefined;
-    if (!ctx.hasUI) return;
-    unsubTerminalInput = ctx.ui.onTerminalInput((data) => {
-      try {
-        if (isViewportScrollInput(data)) state.holdScroll = true;
-        if (nativeExpandLoadedOffCtrlO) return;
-        if (matchesKey(data, "ctrl+o")) {
-          toggleProcessExpanded(ctx);
-          return { consume: true };
-        }
-        if (matchesKey(data, "ctrl+alt+o")) {
-          toggleNativeToolDump(ctx);
-          return { consume: true };
-        }
-      } catch {
-        // Session was replaced.
-      }
-    });
   }
 
   const boot = t();
@@ -1180,7 +812,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         state.maxVisibleLines = num;
         persistConfig();
         ctx.ui.notify(t().linesSet(num), "info");
-        requestRender(true);
       } else {
         ctx.ui.notify(t().linesHelp, "warning");
       }
@@ -1201,7 +832,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         t().langSet(next === "auto" ? `auto → ${detectUiLang("auto")}` : next),
         "info",
       );
-      requestRender(true);
     },
   });
 
@@ -1217,7 +847,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         state.style.preset = parts[0];
         persistConfig();
         ctx.ui.notify(t().styleSet(styleSummary(state.style)), "info");
-        requestRender(true);
         return;
       }
       if (
@@ -1230,7 +859,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         state.style.border = parts[1];
         persistConfig();
         ctx.ui.notify(t().styleSet(styleSummary(state.style)), "info");
-        requestRender(true);
         return;
       }
       ctx.ui.notify(t().styleHelp, "warning");
@@ -1238,12 +866,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
-    unsubTerminalInput?.();
-    unsubTerminalInput = undefined;
-    assistantViews.clear();
-    stopSpinner();
-    state.tui = undefined;
-    state.holdScroll = false;
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
     state.steps = [];
@@ -1251,32 +873,20 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.entryCreated = false;
   });
 
-  pi.on("session_start", (_event, ctx) => {
-    assistantViews.clear();
-    stopSpinner();
+  pi.on("session_start", () => {
     state.steps = [];
     state.runId = "";
     state.entryCreated = false;
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
-    state.holdScroll = false;
     const loaded = loadConfig();
     state.snapshots = loadSnapshots();
     state.maxVisibleLines = loaded.maxVisibleLines;
     state.localePref = loaded.locale;
     state.style = loaded.style;
-    patchHideTranscriptTools(state.hideTranscriptTools);
-    patchHideThinkingLabels(
-      assistantViews,
-      ({ hasToolCalls }) => state.isAgentRunning || hasToolCalls,
-    );
-    hideThinkingChrome(ctx);
-    hideWorkingChrome(ctx);
-    captureTui(ctx);
-    bindTerminalIntercept(ctx);
   });
 
-  pi.on("agent_start", (_event, ctx) => {
+  pi.on("agent_start", () => {
     persistCurrentRun();
     state.isAgentRunning = true;
     state.workingStartedAt = Date.now();
@@ -1285,18 +895,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.entryCreated = false;
     state.thoughtBuffer = "";
     state.lastThoughtHeading = "";
-    patchHideTranscriptTools(state.hideTranscriptTools);
-    hideThinkingChrome(ctx);
-    hideWorkingChrome(ctx);
-    captureTui(ctx);
-    startSpinner();
-    refresh();
   });
 
   pi.on("message_end", (event) => {
     if (!state.isAgentRunning || event.message?.role !== "user") return;
     ensureTranscriptEntry();
-    refresh();
   });
 
   function abortRunningSteps() {
@@ -1310,17 +913,12 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.thoughtBuffer = "";
   }
 
-  pi.on("agent_end", (_event, ctx) => {
+  pi.on("agent_end", () => {
     abortRunningSteps();
     persistCurrentRun();
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
-    stopSpinner();
     ensureTranscriptEntry();
-    hideThinkingChrome(ctx);
-    hideWorkingChrome(ctx);
-    flushAssistantViews(assistantViews);
-    refresh();
   });
 
   pi.on("tool_execution_start", (event) => {
@@ -1338,7 +936,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       startTime: Date.now(),
     });
     ensureTranscriptEntry();
-    refresh();
+    tick();
   });
 
   pi.on("tool_execution_end", (event) => {
@@ -1360,7 +958,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
             : t().linesOut(lines.length);
       }
     }
-    refresh();
+    tick();
   });
 
   pi.on("message_update", (event) => {
