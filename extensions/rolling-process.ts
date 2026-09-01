@@ -837,32 +837,17 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     });
   }
 
-  function showLiveWidget(ctx: ExtensionContext) {
+  function captureTui(ctx: ExtensionContext) {
+    if (state.tui) return;
     withLiveUi(ctx, () => {
       ctx.ui.setWidget(
         TICK_WIDGET,
-        (tui, theme) => {
+        (tui) => {
           state.tui = tui;
-          return {
-            render: (width: number) =>
-              renderProcess(
-                state.steps,
-                width,
-                theme,
-                state.processExpanded,
-                true,
-              ),
-            invalidate: () => {},
-          };
+          return { render: () => [], invalidate: () => {} };
         },
-        { placement: "aboveEditor" },
+        { placement: "belowEditor" },
       );
-    });
-  }
-
-  function hideLiveWidget(ctx: ExtensionContext) {
-    withLiveUi(ctx, () => {
-      ctx.ui.setWidget(TICK_WIDGET, undefined);
     });
   }
 
@@ -1076,13 +1061,10 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     return [top, ...framed, bottom];
   }
 
-  function persistTranscriptEntry() {
-    if (state.entryCreated || !state.runId || state.steps.length === 0) return;
+  function ensureTranscriptEntry() {
+    if (state.entryCreated || !state.runId) return;
     state.entryCreated = true;
-    pi.appendEntry<RunSnapshot>(ENTRY_TYPE, {
-      runId: state.runId,
-      steps: cloneSteps(state.steps),
-    });
+    pi.appendEntry<RunSnapshot>(ENTRY_TYPE, { runId: state.runId, steps: [] });
   }
 
   function refresh() {
@@ -1106,6 +1088,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         status: "running",
         startTime: Date.now(),
       });
+      ensureTranscriptEntry();
     }
     refresh();
   }
@@ -1289,7 +1272,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     );
     hideThinkingChrome(ctx);
     hideWorkingChrome(ctx);
-    hideLiveWidget(ctx);
+    captureTui(ctx);
     bindTerminalIntercept(ctx);
   });
 
@@ -1305,8 +1288,14 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     patchHideTranscriptTools(state.hideTranscriptTools);
     hideThinkingChrome(ctx);
     hideWorkingChrome(ctx);
-    showLiveWidget(ctx);
+    captureTui(ctx);
     startSpinner();
+    refresh();
+  });
+
+  pi.on("message_end", (event) => {
+    if (!state.isAgentRunning || event.message?.role !== "user") return;
+    ensureTranscriptEntry();
     refresh();
   });
 
@@ -1327,8 +1316,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
     stopSpinner();
-    persistTranscriptEntry();
-    hideLiveWidget(ctx);
+    ensureTranscriptEntry();
     hideThinkingChrome(ctx);
     hideWorkingChrome(ctx);
     flushAssistantViews(assistantViews);
@@ -1349,6 +1337,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       status: "running",
       startTime: Date.now(),
     });
+    ensureTranscriptEntry();
     refresh();
   });
 
