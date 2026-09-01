@@ -1,9 +1,24 @@
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { AssistantMessageComponent, getAgentDir, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { Markdown, Spacer, Text, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  Theme,
+} from "@earendil-works/pi-coding-agent";
+import {
+  AssistantMessageComponent,
+  getAgentDir,
+  ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
+import {
+  Markdown,
+  Spacer,
+  Text,
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 
 interface StepItem {
   id: string;
@@ -36,7 +51,16 @@ interface ProcessStyle {
   showDuration: boolean;
   showResult: boolean;
   icons: { done: string; error: string; running: string; aborted: string };
-  colors: { border: string; header: string; kind: string; duration: string; done: string; error: string; running: string; aborted: string };
+  colors: {
+    border: string;
+    header: string;
+    kind: string;
+    duration: string;
+    done: string;
+    error: string;
+    running: string;
+    aborted: string;
+  };
 }
 
 interface ProcessConfig {
@@ -74,8 +98,8 @@ const SNAP_PATH = join(getAgentDir(), "rolling-process-runs.json");
 const TICK_WIDGET = "pi-rolling-process-tick";
 const DURATION_COL = 6;
 const ICON_COL = 2;
-// One dot walking a 2×2 square on braille rows 2–3 (one row lower than the 2×3 spinner).
-const SPINNER_FRAMES = ["⠂", "⠐", "⠠", "⠄"];
+// Walking dot around a 2×3 braille cell (rows 1–3, both columns).
+const SPINNER_FRAMES = ["⠁", "⠈", "⠐", "⠠", "⠄", "⠂"];
 
 const DEFAULT_STYLE: ProcessStyle = {
   preset: "box",
@@ -85,11 +109,23 @@ const DEFAULT_STYLE: ProcessStyle = {
   showKind: true,
   showDuration: true,
   showResult: true,
-  icons: { done: "✅", error: "❌", running: "⠂", aborted: "⚠️" },
-  colors: { border: "border", header: "dim", kind: "muted", duration: "success", done: "success", error: "error", running: "warning", aborted: "warning" },
+  icons: { done: "✅", error: "❌", running: "⠁", aborted: "⚠️" },
+  colors: {
+    border: "border",
+    header: "dim",
+    kind: "muted",
+    duration: "success",
+    done: "success",
+    error: "error",
+    running: "warning",
+    aborted: "warning",
+  },
 };
 
-const BORDERS: Record<Exclude<BorderStyle, "none">, { tl: string; tr: string; bl: string; br: string; h: string; v: string }> = {
+const BORDERS: Record<
+  Exclude<BorderStyle, "none">,
+  { tl: string; tr: string; bl: string; br: string; h: string; v: string }
+> = {
   single: { tl: "┌", tr: "┐", bl: "└", br: "┘", h: "─", v: "│" },
   rounded: { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" },
   double: { tl: "╔", tr: "╗", bl: "╚", br: "╝", h: "═", v: "║" },
@@ -114,10 +150,12 @@ const I18N = {
     cmdLang: "界面语言：auto / zh / en",
     langSet: (v: string) => `界面语言已设为 ${v}`,
     langHelp: "用法: /process-lang auto|zh|en",
-    cmdStyle: "过程框样式：box / panel / plain，或 border single|rounded|double",
+    cmdStyle:
+      "过程框样式：box / panel / plain，或 border single|rounded|double",
     styleSet: (v: string) => `过程样式已设为 ${v}`,
     styleNow: (v: string) => `当前样式 ${v}`,
-    styleHelp: "用法: /process-style box|panel|plain  或  /process-style border single|rounded|double",
+    styleHelp:
+      "用法: /process-style box|panel|plain  或  /process-style border single|rounded|double",
   },
   en: {
     title: "Minimal",
@@ -131,16 +169,19 @@ const I18N = {
     collapsed: (n: number) => `Collapsed (latest ${n})`,
     linesSet: (n: number) => `Collapsed view shows latest ${n}`,
     linesHelp: "Enter 1-20, e.g. /process-lines 6",
-    cmdProcess: "Expand/collapse Minimal mode (ctrl+o; native tool dump is ctrl+alt+o)",
+    cmdProcess:
+      "Expand/collapse Minimal mode (ctrl+o; native tool dump is ctrl+alt+o)",
     cmdLines: "Rows shown when collapsed (default 6)",
     working: "working",
     cmdLang: "UI language: auto / zh / en",
     langSet: (v: string) => `UI language set to ${v}`,
     langHelp: "Usage: /process-lang auto|zh|en",
-    cmdStyle: "Process style: box / panel / plain, or border single|rounded|double",
+    cmdStyle:
+      "Process style: box / panel / plain, or border single|rounded|double",
     styleSet: (v: string) => `Process style set to ${v}`,
     styleNow: (v: string) => `Current style ${v}`,
-    styleHelp: "Usage: /process-style box|panel|plain  or  /process-style border single|rounded|double",
+    styleHelp:
+      "Usage: /process-style box|panel|plain  or  /process-style border single|rounded|double",
   },
 } as const;
 
@@ -151,7 +192,10 @@ function isZhTag(value: string): boolean {
 function readAppleLocale(): string {
   if (process.platform !== "darwin") return "";
   try {
-    return execSync("defaults read -g AppleLocale", { encoding: "utf8", timeout: 800 }).trim();
+    return execSync("defaults read -g AppleLocale", {
+      encoding: "utf8",
+      timeout: 800,
+    }).trim();
   } catch {
     return "";
   }
@@ -233,7 +277,8 @@ function stepDurationText(step: StepItem): string {
     if (step.startTime > 0) return formatDuration(Date.now() - step.startTime);
     return "";
   }
-  if (step.endTime !== undefined && step.startTime > 0) return formatDuration(step.endTime - step.startTime);
+  if (step.endTime !== undefined && step.startTime > 0)
+    return formatDuration(step.endTime - step.startTime);
   return "";
 }
 
@@ -272,9 +317,18 @@ const TOOL_KIND: Record<UiLang, Record<string, string>> = {
   },
 };
 
-function kindLabel(name: string, type: StepItem["type"], lang: UiLang, thought: string): string {
+function kindLabel(
+  name: string,
+  type: StepItem["type"],
+  lang: UiLang,
+  thought: string,
+): string {
   if (type === "thought") return thought;
-  return TOOL_KIND[lang][name] ?? TOOL_KIND[lang][name.toLowerCase()] ?? name.replace(/_/g, " ");
+  return (
+    TOOL_KIND[lang][name] ??
+    TOOL_KIND[lang][name.toLowerCase()] ??
+    name.replace(/_/g, " ")
+  );
 }
 
 function cloneSteps(steps: StepItem[]): StepItem[] {
@@ -291,22 +345,48 @@ function asNonEmptyString(value: unknown, fallback: string): string {
 }
 
 function parseStyle(raw: unknown): ProcessStyle {
-  const src = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const icons = src.icons && typeof src.icons === "object" ? (src.icons as Record<string, unknown>) : {};
-  const colors = src.colors && typeof src.colors === "object" ? (src.colors as Record<string, unknown>) : {};
-  const preset = src.preset === "panel" || src.preset === "plain" || src.preset === "box" ? src.preset : DEFAULT_STYLE.preset;
+  const src =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const icons =
+    src.icons && typeof src.icons === "object"
+      ? (src.icons as Record<string, unknown>)
+      : {};
+  const colors =
+    src.colors && typeof src.colors === "object"
+      ? (src.colors as Record<string, unknown>)
+      : {};
+  const preset =
+    src.preset === "panel" || src.preset === "plain" || src.preset === "box"
+      ? src.preset
+      : DEFAULT_STYLE.preset;
   const border =
-    src.border === "rounded" || src.border === "double" || src.border === "none" || src.border === "single"
+    src.border === "rounded" ||
+    src.border === "double" ||
+    src.border === "none" ||
+    src.border === "single"
       ? src.border
       : DEFAULT_STYLE.border;
   return {
     preset,
     border,
-    showHeader: typeof src.showHeader === "boolean" ? src.showHeader : DEFAULT_STYLE.showHeader,
-    showStepIndex: typeof src.showStepIndex === "boolean" ? src.showStepIndex : DEFAULT_STYLE.showStepIndex,
-    showKind: typeof src.showKind === "boolean" ? src.showKind : DEFAULT_STYLE.showKind,
-    showDuration: typeof src.showDuration === "boolean" ? src.showDuration : DEFAULT_STYLE.showDuration,
-    showResult: typeof src.showResult === "boolean" ? src.showResult : DEFAULT_STYLE.showResult,
+    showHeader:
+      typeof src.showHeader === "boolean"
+        ? src.showHeader
+        : DEFAULT_STYLE.showHeader,
+    showStepIndex:
+      typeof src.showStepIndex === "boolean"
+        ? src.showStepIndex
+        : DEFAULT_STYLE.showStepIndex,
+    showKind:
+      typeof src.showKind === "boolean" ? src.showKind : DEFAULT_STYLE.showKind,
+    showDuration:
+      typeof src.showDuration === "boolean"
+        ? src.showDuration
+        : DEFAULT_STYLE.showDuration,
+    showResult:
+      typeof src.showResult === "boolean"
+        ? src.showResult
+        : DEFAULT_STYLE.showResult,
     icons: {
       done: asNonEmptyString(icons.done, DEFAULT_STYLE.icons.done),
       error: asNonEmptyString(icons.error, DEFAULT_STYLE.icons.error),
@@ -317,7 +397,10 @@ function parseStyle(raw: unknown): ProcessStyle {
       border: asNonEmptyString(colors.border, DEFAULT_STYLE.colors.border),
       header: asNonEmptyString(colors.header, DEFAULT_STYLE.colors.header),
       kind: asNonEmptyString(colors.kind, DEFAULT_STYLE.colors.kind),
-      duration: asNonEmptyString(colors.duration, DEFAULT_STYLE.colors.duration),
+      duration: asNonEmptyString(
+        colors.duration,
+        DEFAULT_STYLE.colors.duration,
+      ),
       done: asNonEmptyString(colors.done, DEFAULT_STYLE.colors.done),
       error: asNonEmptyString(colors.error, DEFAULT_STYLE.colors.error),
       running: asNonEmptyString(colors.running, DEFAULT_STYLE.colors.running),
@@ -327,7 +410,15 @@ function parseStyle(raw: unknown): ProcessStyle {
 }
 
 function loadConfig(): ProcessConfig {
-  const fallback: ProcessConfig = { maxVisibleLines: 6, locale: "auto", style: { ...DEFAULT_STYLE, icons: { ...DEFAULT_STYLE.icons }, colors: { ...DEFAULT_STYLE.colors } } };
+  const fallback: ProcessConfig = {
+    maxVisibleLines: 6,
+    locale: "auto",
+    style: {
+      ...DEFAULT_STYLE,
+      icons: { ...DEFAULT_STYLE.icons },
+      colors: { ...DEFAULT_STYLE.colors },
+    },
+  };
   try {
     const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as {
       maxVisibleLines?: unknown;
@@ -354,7 +445,8 @@ function styleSummary(style: ProcessStyle): string {
 
 function asKeyList(value: unknown): string[] {
   if (typeof value === "string") return [value];
-  if (Array.isArray(value) && value.every((item) => typeof item === "string")) return value;
+  if (Array.isArray(value) && value.every((item) => typeof item === "string"))
+    return value;
   return [];
 }
 
@@ -369,13 +461,18 @@ function keysInclude(keys: string[], id: string): boolean {
 function ensureNativeExpandRemap(): boolean {
   let config: Record<string, unknown> = {};
   try {
-    config = JSON.parse(readFileSync(KEYBINDINGS_PATH, "utf8")) as Record<string, unknown>;
+    config = JSON.parse(readFileSync(KEYBINDINGS_PATH, "utf8")) as Record<
+      string,
+      unknown
+    >;
   } catch {
     config = {};
   }
 
-  const expandSpecified = Object.prototype.hasOwnProperty.call(config, "app.tools.expand");
-  const expandKeys = expandSpecified ? asKeyList(config["app.tools.expand"]) : ["ctrl+o"];
+  const expandSpecified = Object.hasOwn(config, "app.tools.expand");
+  const expandKeys = expandSpecified
+    ? asKeyList(config["app.tools.expand"])
+    : ["ctrl+o"];
   const expandAlreadyOff = !keysInclude(expandKeys, "ctrl+o");
   if (!expandAlreadyOff) {
     const next = expandKeys.filter((key) => key.toLowerCase() !== "ctrl+o");
@@ -383,8 +480,10 @@ function ensureNativeExpandRemap(): boolean {
     config["app.tools.expand"] = next.length === 1 ? next[0] : next;
   }
 
-  const treeSpecified = Object.prototype.hasOwnProperty.call(config, "app.tree.filter.cycleForward");
-  const treeKeys = treeSpecified ? asKeyList(config["app.tree.filter.cycleForward"]) : ["ctrl+o"];
+  const treeSpecified = Object.hasOwn(config, "app.tree.filter.cycleForward");
+  const treeKeys = treeSpecified
+    ? asKeyList(config["app.tree.filter.cycleForward"])
+    : ["ctrl+o"];
   if (keysInclude(treeKeys, "ctrl+o")) {
     const next = treeKeys.filter((key) => key.toLowerCase() !== "ctrl+o");
     if (next.length === 0) next.push("alt+o");
@@ -392,7 +491,11 @@ function ensureNativeExpandRemap(): boolean {
   }
 
   try {
-    writeFileSync(KEYBINDINGS_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    writeFileSync(
+      KEYBINDINGS_PATH,
+      `${JSON.stringify(config, null, 2)}\n`,
+      "utf8",
+    );
   } catch {
     // Input intercept still covers this session.
   }
@@ -402,7 +505,9 @@ function ensureNativeExpandRemap(): boolean {
 function loadSnapshots(): Map<string, StepItem[]> {
   const map = new Map<string, StepItem[]>();
   try {
-    const parsed = JSON.parse(readFileSync(SNAP_PATH, "utf8")) as { runs?: RunSnapshot[] };
+    const parsed = JSON.parse(readFileSync(SNAP_PATH, "utf8")) as {
+      runs?: RunSnapshot[];
+    };
     for (const run of parsed.runs ?? []) {
       if (run?.runId && Array.isArray(run.steps)) map.set(run.runId, run.steps);
     }
@@ -413,11 +518,16 @@ function loadSnapshots(): Map<string, StepItem[]> {
 }
 
 function saveSnapshots(map: Map<string, StepItem[]>) {
-  const runs = [...map.entries()].slice(-80).map(([runId, steps]) => ({ runId, steps }));
+  const runs = [...map.entries()]
+    .slice(-80)
+    .map(([runId, steps]) => ({ runId, steps }));
   writeFileSync(SNAP_PATH, `${JSON.stringify({ runs }, null, 2)}\n`, "utf8");
 }
 
-function getToolPreview(name: string, args: Record<string, unknown> | undefined): string {
+function getToolPreview(
+  name: string,
+  args: Record<string, unknown> | undefined,
+): string {
   const a = args ?? {};
   switch (name) {
     case "bash":
@@ -444,14 +554,25 @@ function getToolPreview(name: string, args: Record<string, unknown> | undefined)
     case "wait":
     case "sleep": {
       const timeout = a.timeout ?? a.ms ?? a.seconds;
-      if (typeof timeout === "number") return `${timeout}${a.seconds !== undefined ? "s" : "ms"}`;
+      if (typeof timeout === "number")
+        return `${timeout}${a.seconds === undefined ? "ms" : "s"}`;
       const run = cleanString(a.runId || a.id || "");
       return run ? run.slice(0, 8) : "";
     }
     case "subagent":
       return cleanString(a.prompt || a.task || a.name || a.description || "");
     default: {
-      const keys = ["command", "query", "pattern", "path", "file", "url", "prompt", "text", "name"];
+      const keys = [
+        "command",
+        "query",
+        "pattern",
+        "path",
+        "file",
+        "url",
+        "prompt",
+        "text",
+        "name",
+      ];
       for (const k of keys) {
         const v = a[k];
         if (typeof v === "string" && v.trim()) return cleanString(v);
@@ -468,14 +589,19 @@ function patchHideTranscriptTools(enabled: boolean) {
     [key: symbol]: unknown;
   };
   if (typeof proto.render !== "function") return;
-  const existing = proto[HIDE_TOOLS_KEY] as { previous: typeof proto.render } | undefined;
+  const existing = proto[HIDE_TOOLS_KEY] as
+    | { previous: typeof proto.render }
+    | undefined;
   if (existing) {
     proto.render = existing.previous;
     delete proto[HIDE_TOOLS_KEY];
   }
   if (!enabled) return;
   const previous = proto.render;
-  proto.render = function patchedRender(this: { expanded?: boolean }, width: number) {
+  proto.render = function patchedRender(
+    this: { expanded?: boolean },
+    width: number,
+  ) {
     if (this.expanded) return previous.call(this, width);
     return [];
   };
@@ -484,14 +610,29 @@ function patchHideTranscriptTools(enabled: boolean) {
 
 function applyMarkdownTransformers(
   markdown: string,
-  transformers: Array<(md: string, ctx: { messageType: string; isStreaming: boolean; availableWidth: number }) => string> | undefined,
+  transformers:
+    | Array<
+        (
+          md: string,
+          ctx: {
+            messageType: string;
+            isStreaming: boolean;
+            availableWidth: number;
+          },
+        ) => string
+      >
+    | undefined,
   isStreaming: boolean,
   availableWidth: number,
 ): string {
   let out = markdown;
   for (const transformer of transformers ?? []) {
     try {
-      const next = transformer(out, { messageType: "assistant", isStreaming, availableWidth });
+      const next = transformer(out, {
+        messageType: "assistant",
+        isStreaming,
+        availableWidth,
+      });
       if (typeof next === "string") out = next;
     } catch {
       // keep current
@@ -508,18 +649,32 @@ type AssistantView = {
   hasToolCalls?: boolean;
   outputPad?: number;
   markdownTheme?: unknown;
-  markdownTransformers?: Array<(md: string, ctx: { messageType: string; isStreaming: boolean; availableWidth: number }) => string>;
+  markdownTransformers?: Array<
+    (
+      md: string,
+      ctx: {
+        messageType: string;
+        isStreaming: boolean;
+        availableWidth: number;
+      },
+    ) => string
+  >;
   updateContent?: (message: unknown, isStreaming?: boolean) => void;
 };
 
 function isThinkingPart(content: { type?: string }): boolean {
   const type = content.type ?? "";
-  return type === "thinking" || type === "reasoning" || type.startsWith("thinking");
+  return (
+    type === "thinking" || type === "reasoning" || type.startsWith("thinking")
+  );
 }
 
 function patchHideThinkingLabels(
   views: Set<AssistantView>,
-  shouldHideText: (info: { isStreaming: boolean; hasToolCalls: boolean }) => boolean,
+  shouldHideText: (info: {
+    isStreaming: boolean;
+    hasToolCalls: boolean;
+  }) => boolean,
 ) {
   // SAFETY: prototype patch; runtime checks updateContent is a function.
   const proto = AssistantMessageComponent.prototype as unknown as {
@@ -527,16 +682,26 @@ function patchHideThinkingLabels(
     [key: symbol]: unknown;
   };
   if (typeof proto.updateContent !== "function") return;
-  const existing = proto[HIDE_THINKING_KEY] as { original: typeof proto.updateContent } | undefined;
+  const existing = proto[HIDE_THINKING_KEY] as
+    | { original: typeof proto.updateContent }
+    | undefined;
   const original = existing?.original ?? proto.updateContent;
 
   proto.updateContent = function patchedUpdateContent(
     this: AssistantView,
-    message: { content?: Array<{ type?: string; text?: string }>; stopReason?: string; errorMessage?: string },
+    message: {
+      content?: Array<{ type?: string; text?: string }>;
+      stopReason?: string;
+      errorMessage?: string;
+    },
     isStreaming?: boolean,
   ) {
     views.add(this);
-    if (!this.hideThinkingBlock || !this.contentContainer || !Array.isArray(message?.content)) {
+    if (
+      !this.hideThinkingBlock ||
+      !this.contentContainer ||
+      !Array.isArray(message?.content)
+    ) {
       return original.call(this, message, isStreaming);
     }
 
@@ -551,23 +716,46 @@ function patchHideThinkingLabels(
     });
     const texts = hideText
       ? []
-      : message.content.filter((c) => c.type === "text" && c.text?.trim() && !isThinkingPart(c));
+      : message.content.filter(
+          (c) => c.type === "text" && c.text?.trim() && !isThinkingPart(c),
+        );
     if (texts.length > 0) {
       this.contentContainer.addChild(new Spacer(1));
       for (const content of texts) {
         this.contentContainer.addChild(
-          new Markdown(content.text!.trim(), this.outputPad ?? 0, 0, this.markdownTheme as never, undefined, {
-            transform: (markdown: string, availableWidth: number) =>
-              applyMarkdownTransformers(markdown, this.markdownTransformers, this.isStreaming ?? false, availableWidth),
-          }),
+          new Markdown(
+            content.text!.trim(),
+            this.outputPad ?? 0,
+            0,
+            this.markdownTheme as never,
+            undefined,
+            {
+              transform: (markdown: string, availableWidth: number) =>
+                applyMarkdownTransformers(
+                  markdown,
+                  this.markdownTransformers,
+                  this.isStreaming ?? false,
+                  availableWidth,
+                ),
+            },
+          ),
         );
       }
     }
 
     if (message.stopReason === "length") {
       this.contentContainer.addChild(new Spacer(1));
-      this.contentContainer.addChild(new Text("Response was truncated before completion.", this.outputPad ?? 0, 0));
-    } else if (texts.length === 0 && (message.stopReason === "aborted" || message.stopReason === "error")) {
+      this.contentContainer.addChild(
+        new Text(
+          "Response was truncated before completion.",
+          this.outputPad ?? 0,
+          0,
+        ),
+      );
+    } else if (
+      texts.length === 0 &&
+      (message.stopReason === "aborted" || message.stopReason === "error")
+    ) {
       return original.call(this, message, isStreaming);
     }
   };
@@ -612,7 +800,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   }
 
   function persistConfig() {
-    saveConfig({ maxVisibleLines: state.maxVisibleLines, locale: state.localePref, style: state.style });
+    saveConfig({
+      maxVisibleLines: state.maxVisibleLines,
+      locale: state.localePref,
+      style: state.style,
+    });
   }
 
   function paintFg(theme: Theme, color: string, text: string): string {
@@ -645,18 +837,41 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     });
   }
 
-  function captureTui(ctx: ExtensionContext) {
-    if (state.tui) return;
+  function showLiveWidget(ctx: ExtensionContext) {
     withLiveUi(ctx, () => {
-      ctx.ui.setWidget(TICK_WIDGET, (tui) => {
-        state.tui = tui;
-        return { render: () => [], invalidate: () => {} };
-      });
+      ctx.ui.setWidget(
+        TICK_WIDGET,
+        (tui, theme) => {
+          state.tui = tui;
+          return {
+            render: (width: number) =>
+              renderProcess(
+                state.steps,
+                width,
+                theme,
+                state.processExpanded,
+                true,
+              ),
+            invalidate: () => {},
+          };
+        },
+        { placement: "aboveEditor" },
+      );
+    });
+  }
+
+  function hideLiveWidget(ctx: ExtensionContext) {
+    withLiveUi(ctx, () => {
+      ctx.ui.setWidget(TICK_WIDGET, undefined);
     });
   }
 
   function isViewportScrollInput(data: string): boolean {
-    return /\x1b\[<(?:64|65|96|97);/.test(data) || data.includes("\x1b[5~") || data.includes("\x1b[6~");
+    return (
+      /\x1b\[<(?:64|65|96|97);/.test(data) ||
+      data.includes("\x1b[5~") ||
+      data.includes("\x1b[6~")
+    );
   }
 
   // ponytail: skip plugin redraws after the user scrolls away; Pi follow-end re-latches if we keep requestRender on a tall paste.
@@ -697,11 +912,18 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
 
   function stepsFor(runId: string | undefined): StepItem[] {
     if (runId && runId === state.runId) return state.steps;
-    if (runId && state.snapshots.has(runId)) return state.snapshots.get(runId) ?? [];
+    if (runId && state.snapshots.has(runId))
+      return state.snapshots.get(runId) ?? [];
     return [];
   }
 
-  function renderProcess(steps: StepItem[], width: number, theme: Theme, expanded: boolean, live: boolean): string[] {
+  function renderProcess(
+    steps: StepItem[],
+    width: number,
+    theme: Theme,
+    expanded: boolean,
+    live: boolean,
+  ): string[] {
     const ui = t();
     const style = state.style;
     const list = [...steps];
@@ -732,12 +954,18 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     }
 
     for (const step of visible) {
-      const durCol = paintFg(theme, style.colors.duration, padDuration(style.showDuration ? stepDurationText(step) : ""));
+      const durCol = paintFg(
+        theme,
+        style.colors.duration,
+        padDuration(style.showDuration ? stepDurationText(step) : ""),
+      );
 
       let iconText = style.icons.done;
       let iconColor = style.colors.done;
       if (step.status === "running") {
-        iconText = SPINNER_FRAMES[state.spinnerFrame % SPINNER_FRAMES.length] ?? style.icons.running;
+        iconText =
+          SPINNER_FRAMES[state.spinnerFrame % SPINNER_FRAMES.length] ??
+          style.icons.running;
         iconColor = style.colors.running;
       } else if (step.status === "error") {
         iconText = style.icons.error;
@@ -749,12 +977,26 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       const icon = paintFg(theme, iconColor, padIcon(iconText));
 
       const kind = style.showKind
-        ? paintFg(theme, style.colors.kind, `${kindLabel(step.name, step.type, detectUiLang(state.localePref), ui.thought)} `)
+        ? paintFg(
+            theme,
+            style.colors.kind,
+            `${kindLabel(step.name, step.type, detectUiLang(state.localePref), ui.thought)} `,
+          )
         : "";
       const index = style.showStepIndex ? `${step.index}. ` : "";
-      const preview = step.detail ? (step.type === "thought" ? paintFg(theme, "dim", step.detail) : step.detail) : "";
+      const preview = step.detail
+        ? step.type === "thought"
+          ? paintFg(theme, "dim", step.detail)
+          : step.detail
+        : "";
       const extra =
-        style.showResult && step.resultSummary ? paintFg(theme, "dim", `${preview ? " -> " : ""}${step.resultSummary}`) : "";
+        style.showResult && step.resultSummary
+          ? paintFg(
+              theme,
+              "dim",
+              `${preview ? " -> " : ""}${step.resultSummary}`,
+            )
+          : "";
       lines.push(`${durCol} ${icon} ${kind}${index}${preview}${extra}`);
     }
 
@@ -764,12 +1006,17 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     }
 
     if (lines.length === 0) return [];
-    if (style.preset === "panel") return paintPanel(lines, width, theme, panelBg(live, steps));
-    if (style.preset === "plain" || style.border === "none") return lines.map((line) => fit(line, width));
+    if (style.preset === "panel")
+      return paintPanel(lines, width, theme, panelBg(live, steps));
+    if (style.preset === "plain" || style.border === "none")
+      return lines.map((line) => fit(line, width));
     return paintBox(lines, width, theme, style);
   }
 
-  function panelBg(live: boolean, steps: StepItem[]): "toolPendingBg" | "toolSuccessBg" | "toolErrorBg" {
+  function panelBg(
+    live: boolean,
+    steps: StepItem[],
+  ): "toolPendingBg" | "toolSuccessBg" | "toolErrorBg" {
     if (live && state.isAgentRunning) return "toolPendingBg";
     if (steps.some((step) => step.status === "error")) return "toolErrorBg";
     return "toolSuccessBg";
@@ -791,30 +1038,51 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     return [blank, ...lines.map(fill), blank];
   }
 
-  function paintBox(lines: string[], width: number, theme: Theme, style: ProcessStyle): string[] {
+  function paintBox(
+    lines: string[],
+    width: number,
+    theme: Theme,
+    style: ProcessStyle,
+  ): string[] {
     const border = BORDERS[style.border === "none" ? "single" : style.border];
     const inner = Math.max(1, width - 2);
     const color = (text: string) => paintFg(theme, style.colors.border, text);
     const topTitle = lines[0] ?? "";
     const body = style.showHeader ? lines.slice(1) : lines;
-    const titlePlain = style.showHeader ? fit(` ${topTitle} `, Math.max(0, width - 4)) : "";
+    const titlePlain = style.showHeader
+      ? fit(` ${topTitle} `, Math.max(0, width - 4))
+      : "";
     const titleWidth = visibleWidth(titlePlain);
     const topMid = Math.max(0, width - 3 - titleWidth);
     const top = style.showHeader
-      ? color(`${border.tl}${border.h}`) + titlePlain + color(border.h.repeat(topMid) + border.tr)
-      : color(`${border.tl}${border.h.repeat(Math.max(0, width - 2))}${border.tr}`);
+      ? color(`${border.tl}${border.h}`) +
+        titlePlain +
+        color(border.h.repeat(topMid) + border.tr)
+      : color(
+          `${border.tl}${border.h.repeat(Math.max(0, width - 2))}${border.tr}`,
+        );
     const framed = body.map((line) => {
       const fitted = fit(line, inner);
-      return color(border.v) + fitted + " ".repeat(Math.max(0, inner - visibleWidth(fitted))) + color(border.v);
+      return (
+        color(border.v) +
+        fitted +
+        " ".repeat(Math.max(0, inner - visibleWidth(fitted))) +
+        color(border.v)
+      );
     });
-    const bottom = color(`${border.bl}${border.h.repeat(Math.max(0, width - 2))}${border.br}`);
+    const bottom = color(
+      `${border.bl}${border.h.repeat(Math.max(0, width - 2))}${border.br}`,
+    );
     return [top, ...framed, bottom];
   }
 
-  function ensureTranscriptEntry() {
-    if (state.entryCreated || !state.runId) return;
+  function persistTranscriptEntry() {
+    if (state.entryCreated || !state.runId || state.steps.length === 0) return;
     state.entryCreated = true;
-    pi.appendEntry<RunSnapshot>(ENTRY_TYPE, { runId: state.runId, steps: [] });
+    pi.appendEntry<RunSnapshot>(ENTRY_TYPE, {
+      runId: state.runId,
+      steps: cloneSteps(state.steps),
+    });
   }
 
   function refresh() {
@@ -838,7 +1106,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         status: "running",
         startTime: Date.now(),
       });
-      ensureTranscriptEntry();
     }
     refresh();
   }
@@ -857,7 +1124,12 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.processExpanded = !state.processExpanded;
     if (ctx) {
       withLiveUi(ctx, () => {
-        ctx.ui.notify(state.processExpanded ? t().expanded : t().collapsed(state.maxVisibleLines), "info");
+        ctx.ui.notify(
+          state.processExpanded
+            ? t().expanded
+            : t().collapsed(state.maxVisibleLines),
+          "info",
+        );
       });
     }
     requestRender(true);
@@ -896,7 +1168,13 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   pi.registerEntryRenderer<RunSnapshot>(ENTRY_TYPE, (entry, _opts, theme) => {
     return {
       render: (width: number) =>
-        renderProcess(stepsFor(entry.data?.runId), width, theme, state.processExpanded, entry.data?.runId === state.runId),
+        renderProcess(
+          stepsFor(entry.data?.runId),
+          width,
+          theme,
+          state.processExpanded,
+          entry.data?.runId === state.runId,
+        ),
       invalidate: () => {},
     };
   });
@@ -936,7 +1214,10 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       }
       state.localePref = next;
       persistConfig();
-      ctx.ui.notify(t().langSet(next === "auto" ? `auto → ${detectUiLang("auto")}` : next), "info");
+      ctx.ui.notify(
+        t().langSet(next === "auto" ? `auto → ${detectUiLang("auto")}` : next),
+        "info",
+      );
       requestRender(true);
     },
   });
@@ -956,7 +1237,13 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         requestRender(true);
         return;
       }
-      if (parts[0] === "border" && (parts[1] === "single" || parts[1] === "rounded" || parts[1] === "double" || parts[1] === "none")) {
+      if (
+        parts[0] === "border" &&
+        (parts[1] === "single" ||
+          parts[1] === "rounded" ||
+          parts[1] === "double" ||
+          parts[1] === "none")
+      ) {
         state.style.border = parts[1];
         persistConfig();
         ctx.ui.notify(t().styleSet(styleSummary(state.style)), "info");
@@ -996,10 +1283,13 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.localePref = loaded.locale;
     state.style = loaded.style;
     patchHideTranscriptTools(state.hideTranscriptTools);
-    patchHideThinkingLabels(assistantViews, ({ hasToolCalls }) => state.isAgentRunning || hasToolCalls);
+    patchHideThinkingLabels(
+      assistantViews,
+      ({ hasToolCalls }) => state.isAgentRunning || hasToolCalls,
+    );
     hideThinkingChrome(ctx);
     hideWorkingChrome(ctx);
-    captureTui(ctx);
+    hideLiveWidget(ctx);
     bindTerminalIntercept(ctx);
   });
 
@@ -1015,8 +1305,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     patchHideTranscriptTools(state.hideTranscriptTools);
     hideThinkingChrome(ctx);
     hideWorkingChrome(ctx);
-    ensureTranscriptEntry();
-    captureTui(ctx);
+    showLiveWidget(ctx);
     startSpinner();
     refresh();
   });
@@ -1038,6 +1327,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
     stopSpinner();
+    persistTranscriptEntry();
+    hideLiveWidget(ctx);
     hideThinkingChrome(ctx);
     hideWorkingChrome(ctx);
     flushAssistantViews(assistantViews);
@@ -1051,11 +1342,13 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       index: state.steps.length + 1,
       type: "tool",
       name: event.toolName,
-      detail: getToolPreview(event.toolName, event.args as Record<string, unknown> | undefined),
+      detail: getToolPreview(
+        event.toolName,
+        event.args as Record<string, unknown> | undefined,
+      ),
       status: "running",
       startTime: Date.now(),
     });
-    ensureTranscriptEntry();
     refresh();
   });
 
@@ -1066,11 +1359,16 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       item.endTime = Date.now();
       const content = event.result?.content;
       const text = Array.isArray(content)
-        ? content.find((c: { type?: string; text?: string }) => c?.type === "text")?.text
+        ? content.find(
+            (c: { type?: string; text?: string }) => c?.type === "text",
+          )?.text
         : undefined;
       if (typeof text === "string" && text.trim()) {
         const lines = text.trim().split("\n").filter(Boolean);
-        item.resultSummary = lines.length === 1 ? cleanString(lines[0]).slice(0, 40) : t().linesOut(lines.length);
+        item.resultSummary =
+          lines.length === 1
+            ? cleanString(lines[0]).slice(0, 40)
+            : t().linesOut(lines.length);
       }
     }
     refresh();
@@ -1087,10 +1385,16 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       return;
     }
 
-    if (ev.type === "thinking_delta" || ev.type === "thinking_end" || ev.type.startsWith("thinking")) {
+    if (
+      ev.type === "thinking_delta" ||
+      ev.type === "thinking_end" ||
+      ev.type.startsWith("thinking")
+    ) {
       const chunk = ev.delta ?? ev.thinking ?? ev.content ?? "";
-      if (ev.type === "thinking_delta" && typeof chunk === "string") state.thoughtBuffer += chunk;
-      else if (typeof ev.thinking === "string" && ev.thinking.trim()) state.thoughtBuffer = ev.thinking;
+      if (ev.type === "thinking_delta" && typeof chunk === "string")
+        state.thoughtBuffer += chunk;
+      else if (typeof ev.thinking === "string" && ev.thinking.trim())
+        state.thoughtBuffer = ev.thinking;
       const heading = extractThoughtHeading(state.thoughtBuffer);
       if (heading) upsertThought(heading);
       if (ev.type === "thinking_end") finishRunningThought();
