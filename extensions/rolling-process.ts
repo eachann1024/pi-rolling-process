@@ -61,7 +61,8 @@ interface ProcessState {
   lastThoughtHeading: string;
   hideTranscriptTools: boolean;
   processExpanded: boolean;
-  tui?: { requestRender: () => void };
+  holdScroll: boolean;
+  tui?: { requestRender: () => void; isFollowingOutput?: boolean };
 }
 
 const ENTRY_TYPE = "pi-rolling-process";
@@ -461,6 +462,7 @@ function getToolPreview(name: string, args: Record<string, unknown> | undefined)
 }
 
 function patchHideTranscriptTools(enabled: boolean) {
+  // SAFETY: prototype patch; runtime checks render is a function.
   const proto = ToolExecutionComponent.prototype as unknown as {
     render: (width: number) => string[];
     [key: symbol]: unknown;
@@ -519,6 +521,7 @@ function patchHideThinkingLabels(
   views: Set<AssistantView>,
   shouldHideText: (info: { isStreaming: boolean; hasToolCalls: boolean }) => boolean,
 ) {
+  // SAFETY: prototype patch; runtime checks updateContent is a function.
   const proto = AssistantMessageComponent.prototype as unknown as {
     updateContent: (message: unknown, isStreaming?: boolean) => void;
     [key: symbol]: unknown;
@@ -599,6 +602,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     lastThoughtHeading: "",
     hideTranscriptTools: true,
     processExpanded: false,
+    holdScroll: false,
   };
   const assistantViews = new Set<AssistantView>();
   let unsubTerminalInput: (() => void) | undefined;
@@ -642,6 +646,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   }
 
   function captureTui(ctx: ExtensionContext) {
+    if (state.tui) return;
     withLiveUi(ctx, () => {
       ctx.ui.setWidget(TICK_WIDGET, (tui) => {
         state.tui = tui;
@@ -650,8 +655,18 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     });
   }
 
-  function requestRender() {
-    state.tui?.requestRender();
+  function isViewportScrollInput(data: string): boolean {
+    return /\x1b\[<(?:64|65|96|97);/.test(data) || data.includes("\x1b[5~") || data.includes("\x1b[6~");
+  }
+
+  // ponytail: skip plugin redraws after the user scrolls away; Pi follow-end re-latches if we keep requestRender on a tall paste.
+  function requestRender(force = false) {
+    const tui = state.tui;
+    if (!tui) return;
+    if (tui.isFollowingOutput === true) state.holdScroll = false;
+    if (!force && state.holdScroll) return;
+    if (!force && tui.isFollowingOutput === false) return;
+    tui.requestRender();
   }
 
   function startSpinner() {
@@ -845,7 +860,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         ctx.ui.notify(state.processExpanded ? t().expanded : t().collapsed(state.maxVisibleLines), "info");
       });
     }
-    refresh();
+    requestRender(true);
   }
 
   function toggleNativeToolDump(ctx: ExtensionContext) {
@@ -857,9 +872,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   function bindTerminalIntercept(ctx: ExtensionContext) {
     unsubTerminalInput?.();
     unsubTerminalInput = undefined;
-    if (nativeExpandLoadedOffCtrlO || !ctx.hasUI) return;
+    if (!ctx.hasUI) return;
     unsubTerminalInput = ctx.ui.onTerminalInput((data) => {
       try {
+        if (isViewportScrollInput(data)) state.holdScroll = true;
+        if (nativeExpandLoadedOffCtrlO) return;
         if (matchesKey(data, "ctrl+o")) {
           toggleProcessExpanded(ctx);
           return { consume: true };
@@ -902,7 +919,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         state.maxVisibleLines = num;
         persistConfig();
         ctx.ui.notify(t().linesSet(num), "info");
-        refresh();
+        requestRender(true);
       } else {
         ctx.ui.notify(t().linesHelp, "warning");
       }
@@ -920,7 +937,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       state.localePref = next;
       persistConfig();
       ctx.ui.notify(t().langSet(next === "auto" ? `auto → ${detectUiLang("auto")}` : next), "info");
-      refresh();
+      requestRender(true);
     },
   });
 
@@ -936,14 +953,14 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         state.style.preset = parts[0];
         persistConfig();
         ctx.ui.notify(t().styleSet(styleSummary(state.style)), "info");
-        refresh();
+        requestRender(true);
         return;
       }
       if (parts[0] === "border" && (parts[1] === "single" || parts[1] === "rounded" || parts[1] === "double" || parts[1] === "none")) {
         state.style.border = parts[1];
         persistConfig();
         ctx.ui.notify(t().styleSet(styleSummary(state.style)), "info");
-        refresh();
+        requestRender(true);
         return;
       }
       ctx.ui.notify(t().styleHelp, "warning");
@@ -956,6 +973,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     assistantViews.clear();
     stopSpinner();
     state.tui = undefined;
+    state.holdScroll = false;
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
     state.steps = [];
@@ -971,6 +989,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.entryCreated = false;
     state.isAgentRunning = false;
     state.workingStartedAt = undefined;
+    state.holdScroll = false;
     const loaded = loadConfig();
     state.snapshots = loadSnapshots();
     state.maxVisibleLines = loaded.maxVisibleLines;
@@ -1025,9 +1044,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     refresh();
   });
 
-  pi.on("tool_execution_start", (event, ctx) => {
+  pi.on("tool_execution_start", (event) => {
     finishRunningThought();
-    hideThinkingChrome(ctx);
     state.steps.push({
       id: event.toolCallId,
       index: state.steps.length + 1,
@@ -1038,7 +1056,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       startTime: Date.now(),
     });
     ensureTranscriptEntry();
-    captureTui(ctx);
     refresh();
   });
 
