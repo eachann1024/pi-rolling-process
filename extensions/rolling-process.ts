@@ -43,7 +43,6 @@ interface ProcessState {
   thoughtBuffer: string;
   lastThoughtHeading: string;
   hideTranscriptTools: boolean;
-  lastCtx?: ExtensionContext;
   tui?: { requestRender: () => void };
 }
 
@@ -347,28 +346,33 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     saveConfig({ maxVisibleLines: state.maxVisibleLines, locale: state.localePref });
   }
 
-  function isExpanded(entryExpanded?: boolean): boolean {
-    if (state.lastCtx?.hasUI) return state.lastCtx.ui.getToolsExpanded();
-    return entryExpanded ?? false;
-  }
-
   function spinner(): string {
     return SPINNER_FRAMES[state.spinnerFrame % SPINNER_FRAMES.length] ?? "⠋";
   }
 
+  function withLiveUi(ctx: ExtensionContext, fn: () => void) {
+    try {
+      if (!ctx.hasUI) return;
+      fn();
+    } catch {
+      // Session was replaced (/new, /reload, fork). Drop the stale ctx.
+    }
+  }
+
   function hideChrome(ctx: ExtensionContext) {
-    if (!ctx.hasUI) return;
-    ctx.ui.setWorkingVisible(false);
-    ctx.ui.setHiddenThinkingLabel("");
-    ctx.ui.setWidget("rolling-process", undefined);
+    withLiveUi(ctx, () => {
+      ctx.ui.setWorkingVisible(false);
+      ctx.ui.setHiddenThinkingLabel("");
+      ctx.ui.setWidget("rolling-process", undefined);
+    });
   }
 
   function captureTui(ctx: ExtensionContext) {
-    state.lastCtx = ctx;
-    if (!ctx.hasUI) return;
-    ctx.ui.setWidget(TICK_WIDGET, (tui) => {
-      state.tui = tui;
-      return { render: () => [], invalidate: () => {} };
+    withLiveUi(ctx, () => {
+      ctx.ui.setWidget(TICK_WIDGET, (tui) => {
+        state.tui = tui;
+        return { render: () => [], invalidate: () => {} };
+      });
     });
   }
 
@@ -493,7 +497,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
 
   pi.registerEntryRenderer<RunSnapshot>(ENTRY_TYPE, (entry, { expanded }, theme) => {
     return {
-      render: (width: number) => renderProcess(stepsFor(entry.data?.runId), width, theme, isExpanded(expanded)),
+      render: (width: number) => renderProcess(stepsFor(entry.data?.runId), width, theme, expanded),
       invalidate: () => {},
     };
   });
@@ -531,6 +535,18 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       ctx.ui.notify(t().langSet(next === "auto" ? `auto → ${detectUiLang("auto")}` : next), "info");
       refresh();
     },
+  });
+
+  pi.on("session_shutdown", () => {
+    if (state.spinnerTimer) {
+      clearInterval(state.spinnerTimer);
+      state.spinnerTimer = undefined;
+    }
+    state.tui = undefined;
+    state.isAgentRunning = false;
+    state.steps = [];
+    state.runId = "";
+    state.entryCreated = false;
   });
 
   pi.on("session_start", (_event, ctx) => {
