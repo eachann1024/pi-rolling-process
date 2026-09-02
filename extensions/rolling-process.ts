@@ -175,10 +175,7 @@ const BUILTIN_TOOLS = new Set([
 const SKILL_PATH_RE = /\/skills\/|SKILL\.md|\/\.agents\//;
 const PATCH_FLAG = Symbol.for("pi-rolling-process.toolRenderPatched");
 const HIDDEN_GETTER = Symbol.for("pi-rolling-process.toolHiddenGetter");
-const EXPANDED_LISTENERS = Symbol.for(
-  "pi-rolling-process.toolExpandedListeners",
-);
-let nativeToolsExpanded = false;
+const EXPANDED_KICK = Symbol.for("pi-rolling-process.toolExpandedKick");
 const SCROLL_FOLLOW_PATCH_FLAG = Symbol.for(
   "pi-rolling-process.scrollFollowPatched",
 );
@@ -263,9 +260,9 @@ const I18N = {
     more: (n: number) => `··· +${n}`,
     linesOut: (n: number) => `${n} 行`,
     linesSet: (n: number) => `收起时显示最新 ${n} 条`,
-    linesHelp: "请输入 1 到 20，例如: /process-lines 5",
+    linesHelp: "请输入 1 到 20，例如: /process-lines 10",
     cmdProcess: "展开/收起极简模式（ctrl+o；原生工具展开为 ctrl+alt+o）",
-    cmdLines: "设置收起时显示的条数（默认 5）",
+    cmdLines: "设置收起时显示的条数（默认 10）",
     thinkingNow: "思考中…",
     statusDone: (n: number) => `完成 · ${n} 步`,
     statusError: (n: number) => `出错 · ${n} 步`,
@@ -297,10 +294,10 @@ const I18N = {
     more: (n: number) => `··· +${n}`,
     linesOut: (n: number) => `${n} lines`,
     linesSet: (n: number) => `Collapsed view shows latest ${n}`,
-    linesHelp: "Enter 1-20, e.g. /process-lines 5",
+    linesHelp: "Enter 1-20, e.g. /process-lines 10",
     cmdProcess:
       "Expand/collapse Minimal mode (ctrl+o; native tool dump is ctrl+alt+o)",
-    cmdLines: "Rows shown when collapsed (default 5)",
+    cmdLines: "Rows shown when collapsed (default 10)",
     thinkingNow: "Thinking…",
     statusDone: (n: number) => `Done · ${n} steps`,
     statusError: (n: number) => `Error · ${n} steps`,
@@ -595,21 +592,13 @@ function normalizeStep(step: StepItem & { category?: StepCategory }): StepItem {
   };
 }
 
-function patchToolCards(
-  isHidden: () => boolean,
-  onExpandedChange?: () => void,
-) {
+function patchToolCards(isHidden: () => boolean, onRender?: () => void) {
   const proto = ToolExecutionComponent.prototype as unknown as Record<
     PropertyKey,
     unknown
   >;
   proto[HIDDEN_GETTER] = isHidden;
-  let listeners = proto[EXPANDED_LISTENERS] as Set<() => void> | undefined;
-  if (!listeners) {
-    listeners = new Set();
-    proto[EXPANDED_LISTENERS] = listeners;
-  }
-  if (onExpandedChange) listeners.add(onExpandedChange);
+  proto[EXPANDED_KICK] = onRender;
   if (proto[PATCH_FLAG]) return;
   const original = proto.render;
   if (typeof original !== "function") return;
@@ -618,14 +607,10 @@ function patchToolCards(
     this: { expanded?: boolean },
     width: number,
   ): string[] {
-    const expanded = this.expanded === true;
-    if (nativeToolsExpanded !== expanded) {
-      nativeToolsExpanded = expanded;
-      const notify = proto[EXPANDED_LISTENERS] as Set<() => void> | undefined;
-      if (notify) for (const fn of notify) fn();
-    }
+    const kick = proto[EXPANDED_KICK] as (() => void) | undefined;
+    kick?.();
     const hiddenGetter = proto[HIDDEN_GETTER] as (() => boolean) | undefined;
-    if (hiddenGetter?.() && !expanded) return [];
+    if (hiddenGetter?.() && this.expanded !== true) return [];
     return (original as (this: unknown, w: number) => string[]).call(
       this,
       width,
@@ -640,7 +625,8 @@ type ScrollViewInternals = {
   currentScrollTop: number;
   contentHeight: number;
   currentViewportHeight: number;
-  userScrollPending?: boolean;
+  userPinned?: boolean;
+  pinnedScrollTop?: number;
 };
 
 const DEBUG_LOG_PATH = "/tmp/pi-minimal-mode-debug.log";
@@ -660,13 +646,11 @@ function debugLog(line: string, withStack = false) {
   }
 }
 
-// pi-tui ScrollView re-latches follow-end inside updateLayout whenever the
-// clamped cursor lands exactly on maxScrollTop — a layout side effect, not
-// the user scrolling back. Only a deliberate scroll action (scrollBy /
-// scrollTo / scrollToStart / scrollToEnd) may flip followingEnd false→true;
-// any other re-latch is undone so an expanded transcript does not yank the
-// user to the bottom on every frame. Pi's own scrollToEnd sets followingEnd
-// directly and never passes through this guard.
+// pi-tui ScrollView re-latches follow-end in updateLayout when followEnd &&
+// scrollTop===maxScrollTop. A degenerate layout (viewportHeight<=0 or
+// contentHeight<=viewportHeight) forces maxScrollTop=0, clamps scrollTop to 0,
+// and re-locks followingEnd. The next real frame then yanks the viewport.
+// Pin scrolled-up views on this; leave unpinned (at-end) views following.
 function patchScrollViewFollow(): boolean {
   try {
     const proto = ScrollView.prototype as unknown as Record<
@@ -691,12 +675,15 @@ function patchScrollViewFollow(): boolean {
           0,
           this.contentHeight - this.currentViewportHeight,
         );
-        // Pi 0.84.4 scrollBy already clears followingEnd when next < max;
-        // keep the write explicit so an older tui cannot leave follow latched.
-        if (this.currentScrollTop < maxScrollTop) this.followingEnd = false;
-        // Only a deliberate scroll that landed on the end may allow a later
-        // updateLayout to re-latch; scrolling away must not.
-        this.userScrollPending = this.followingEnd === true;
+        if (name === "scrollToEnd") {
+          this.userPinned = false;
+        } else if (this.currentScrollTop < maxScrollTop && maxScrollTop > 0) {
+          this.userPinned = true;
+          this.pinnedScrollTop = this.currentScrollTop;
+          this.followingEnd = false;
+        } else {
+          this.userPinned = false;
+        }
         return result;
       };
     }
@@ -706,12 +693,11 @@ function patchScrollViewFollow(): boolean {
       viewportHeight: number,
       requestRender: () => void,
     ): void {
-      const wasFollowing = this.followingEnd;
       const prevScrollTop = this.currentScrollTop;
-      const prevMax = Math.max(
-        0,
-        this.contentHeight - this.currentViewportHeight,
-      );
+      const prevViewport = this.currentViewportHeight;
+      const prevContent = this.contentHeight;
+      const wasPinned = this.userPinned === true;
+      const savedPin = this.pinnedScrollTop ?? prevScrollTop;
       (
         originalUpdate as (
           this: unknown,
@@ -724,39 +710,21 @@ function patchScrollViewFollow(): boolean {
         0,
         this.contentHeight - this.currentViewportHeight,
       );
-      const pending = this.userScrollPending === true;
-      // Hard stop: layout must not yank a non-following viewport to the end.
-      if (
-        !wasFollowing &&
-        !pending &&
-        this.currentScrollTop === newMax &&
-        prevScrollTop < newMax
-      ) {
-        const yanked = this.currentScrollTop;
-        this.currentScrollTop = Math.min(prevScrollTop, newMax);
+      const degenerate =
+        viewportHeight <= 0 || contentHeight <= viewportHeight;
+      if (wasPinned || this.userPinned) {
+        this.userPinned = true;
         this.followingEnd = false;
+        this.followSuppressedAtEnd = true;
+        this.currentScrollTop = Math.min(savedPin, newMax);
+        this.pinnedScrollTop = degenerate ? savedPin : this.currentScrollTop;
         if (debugEnabled)
           debugLog(
-            `updateLayout undo-stick prevScrollTop=${prevScrollTop} newScrollTop=${yanked} restored=${this.currentScrollTop} max=${newMax}`,
+            `updateLayout pin savedPin=${savedPin} scrollTop=${this.currentScrollTop} max=${newMax} degenerate=${degenerate} vh=${prevViewport}->${viewportHeight} ch=${prevContent}->${contentHeight}`,
             true,
           );
+        return;
       }
-      if (!wasFollowing && this.followingEnd) {
-        const undone = !pending;
-        if (debugEnabled)
-          debugLog(
-            `updateLayout re-latch prevMax=${prevMax} newMax=${newMax} scrollTop=${this.currentScrollTop} userScrollPending=${pending} undone=${undone}`,
-            true,
-          );
-        if (undone) {
-          // Clamp landed the cursor exactly on the end; mark it suppressed so
-          // further layouts do not re-latch either. scrollBy/scrollTo/
-          // scrollToEnd clear the flag, so deliberate scrolls still follow.
-          this.followingEnd = false;
-          this.followSuppressedAtEnd = true;
-        }
-      }
-      this.userScrollPending = false;
     };
     return true;
   } catch {
@@ -779,10 +747,40 @@ function patchAssistantMessages(isCompact: () => boolean) {
     const compactGetter = proto[ASSISTANT_COMPACT_GETTER] as
       | (() => boolean)
       | undefined;
-    const self = this as { hasToolCalls?: boolean };
+    const self = this as {
+      hasToolCalls?: boolean;
+      isStreaming?: boolean;
+      lastMessage?: {
+        content?: Array<{ type?: string; text?: string; thinking?: string }>;
+      };
+    };
     // Intermediate notes already live in the process box; do not repeat them.
-    // Final answers render exactly like stock Pi.
-    if (compactGetter?.() && self.hasToolCalls === true) return [];
+    // Streaming thinking (and text that still sits on a thinking message) is
+    // hidden so it does not flash below the process box; the thought row is
+    // inserted on thinking_start. Text-only final answers still stream natively.
+    if (compactGetter?.()) {
+      if (self.hasToolCalls === true) return [];
+      if (self.isStreaming === true) {
+        const content = self.lastMessage?.content;
+        const hasThinking =
+          Array.isArray(content) &&
+          content.some(
+            (c) =>
+              c.type === "thinking" &&
+              typeof c.thinking === "string" &&
+              c.thinking.trim().length > 0,
+          );
+        const hasAssistantText =
+          Array.isArray(content) &&
+          content.some(
+            (c) =>
+              c.type === "text" &&
+              typeof c.text === "string" &&
+              c.text.trim().length > 0,
+          );
+        if (hasThinking || !hasAssistantText) return [];
+      }
+    }
     return (original as (this: unknown, w: number) => string[]).call(
       this,
       width,
@@ -882,7 +880,7 @@ function parseStyle(raw: unknown): ProcessStyle {
 
 function loadConfig(): ProcessConfig {
   const fallback: ProcessConfig = {
-    maxVisibleLines: 5,
+    maxVisibleLines: 10,
     locale: "auto",
     hideNativeTools: true,
     hideWorkingIndicator: true,
@@ -1155,10 +1153,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   let capturedTui: { requestRender: () => void } | undefined;
   let liveUiCtx: ExtensionContext | undefined;
   let processWidgetDocked = false;
-  let onNativeExpandedChange = () => {};
+  let lastToolsExpandedSeen = false;
+  let onToolCardRender = () => {};
   patchToolCards(
     () => state.hideNativeTools,
-    () => onNativeExpandedChange(),
+    () => onToolCardRender(),
   );
   patchAssistantMessages(() => state.hideNativeTools);
   const scrollPatchApplied = patchScrollViewFollow();
@@ -1296,11 +1295,42 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     liveUiCtx = ctx;
   }
 
-  function clipWidgetLines(lines: string[]): string[] {
-    if (lines.length <= MAX_WIDGET_LINES) return lines;
-    if (lines.length < 2) return lines.slice(0, MAX_WIDGET_LINES);
-    const inner = Math.max(0, MAX_WIDGET_LINES - 2);
-    return [lines[0]!, ...lines.slice(1, -1).slice(-inner), lines[lines.length - 1]!];
+  function readToolsExpanded(): boolean {
+    const ctx = liveUiCtx;
+    if (!ctx?.hasUI) return false;
+    try {
+      const fn = ctx.ui.getToolsExpanded;
+      return typeof fn === "function" && fn.call(ctx.ui) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function stabilizeWidgetLines(
+    lines: string[],
+    target: number,
+    width: number,
+  ): string[] {
+    if (target <= 0) return [];
+    const blank = " ".repeat(Math.max(0, width));
+    if (lines.length === target) return lines;
+    if (lines.length > target) {
+      if (lines.length < 2) return lines.slice(0, target);
+      const inner = Math.max(0, target - 2);
+      return [
+        lines[0]!,
+        ...lines.slice(1, -1).slice(-inner),
+        lines[lines.length - 1]!,
+      ];
+    }
+    if (lines.length === 0) return Array.from({ length: target }, () => blank);
+    if (lines.length === 1) return [lines[0]!, ...Array(target - 1).fill(blank)];
+    return [
+      lines[0]!,
+      ...lines.slice(1, -1),
+      ...Array(target - lines.length).fill(blank),
+      lines[lines.length - 1]!,
+    ];
   }
 
   function renderDockedProcess(width: number, theme: Theme): string[] {
@@ -1313,7 +1343,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     const cap = expanded
       ? budget
       : Math.min(state.maxVisibleLines, budget);
-    return clipWidgetLines(
+    const target = expanded ? MAX_WIDGET_LINES : chrome + cap;
+    return stabilizeWidgetLines(
       renderProcess(
         runId,
         steps,
@@ -1323,13 +1354,16 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         runId === state.runId,
         cap,
       ),
+      target,
+      width,
     );
   }
 
   function syncProcessWidget() {
     const ctx = liveUiCtx;
-    const show =
-      nativeToolsExpanded && Boolean(state.runId || state.lastEntryRunId);
+    const expanded = readToolsExpanded();
+    lastToolsExpandedSeen = expanded;
+    const show = expanded && Boolean(state.runId || state.lastEntryRunId);
     if (show === processWidgetDocked) return;
     if (!ctx) {
       processWidgetDocked = false;
@@ -1354,9 +1388,11 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     });
   }
 
-  onNativeExpandedChange = () => {
+  onToolCardRender = () => {
+    const now = readToolsExpanded();
+    if (now === lastToolsExpandedSeen) return;
+    lastToolsExpandedSeen = now;
     bustRenderCache();
-    syncProcessWidget();
     kickRender();
   };
 
@@ -2186,6 +2222,23 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.runningToolStepIndex = found;
   }
 
+  function beginThought() {
+    const last = state.steps.at(-1);
+    if (last && last.type === "thought" && last.status === "running") return;
+    state.steps.push({
+      id: `thought-${Date.now()}`,
+      index: state.steps.length + 1,
+      type: "thought",
+      category: "thought",
+      name: "thinking",
+      detail: "",
+      status: "running",
+      startTime: Date.now(),
+    });
+    rememberStep(state.steps[state.steps.length - 1]!);
+    ensureTranscriptEntry();
+  }
+
   function upsertThought(heading: string) {
     if (!heading || heading.length < 2) return;
     if (heading === state.lastThoughtHeading) return;
@@ -2197,18 +2250,10 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       last.detail = next;
       bumpStepsGen();
     } else {
-      state.steps.push({
-        id: `thought-${Date.now()}`,
-        index: state.steps.length + 1,
-        type: "thought",
-        category: "thought",
-        name: "thinking",
-        detail: capLine(heading, THOUGHT_HEADING_MAX),
-        status: "running",
-        startTime: Date.now(),
-      });
-      rememberStep(state.steps[state.steps.length - 1]!);
-      ensureTranscriptEntry();
+      beginThought();
+      const created = state.steps.at(-1);
+      if (created && created.type === "thought" && created.status === "running")
+        created.detail = capLine(heading, THOUGHT_HEADING_MAX);
     }
   }
 
@@ -2351,7 +2396,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     const runId = entry.data?.runId;
     return {
       render: (width: number) => {
-        if (nativeToolsExpanded) return [];
+        if (readToolsExpanded()) return [];
         return renderProcess(
           runId,
           stepsFor(runId, entry.data?.steps),
@@ -2461,6 +2506,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     if (!capturedTui) captureTui(ctx);
     applyUiPreferences(ctx);
     startSpinnerTimer();
+    syncProcessWidget();
   });
 
   pi.on("message_end", (event) => {
@@ -2618,6 +2664,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       if (ev.type === "thinking_start") {
         state.thoughtBuffer = "";
         state.thoughtLineLocked = false;
+        beginThought();
         return;
       }
 
