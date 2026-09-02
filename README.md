@@ -83,7 +83,7 @@ With `hideNativeTools: true` (default), all tool cards (including other extensio
 
 ```text
 /process                         expand / collapse
-/process-lines 6                 collapsed row count (1–20)
+/process-lines 10                collapsed row count (1–20, default 10)
 /process-lang auto               auto | zh | en
 /process-native                  show whether native tool blocks are hidden
 /process-native on|off           hide (on, default) or show (off); takes effect immediately
@@ -107,7 +107,7 @@ No other `/process-style` subcommands. There is no `preset` keyword — the pres
 
 ```json
 {
-  "maxVisibleLines": 6,
+  "maxVisibleLines": 10,
   "locale": "auto",
   "hideNativeTools": true,
   "hideWorkingIndicator": true,
@@ -154,7 +154,7 @@ No other `/process-style` subcommands. There is no `preset` keyword — the pres
 
 `hideWorkingIndicator` (default `true`) hides Pi's native `Working…` status row, because the process block already has its own status row. Config file only; takes effect after `/reload`. No slash command.
 
-`hideThinkingLabel` (default `true`) clears Pi's `Thinking…` label when thinking is hidden. Config file only; takes effect after `/reload`. No slash command.
+`hideThinkingLabel` (default `true`) clears Pi's `Thinking…` label when thinking is hidden. Thinking itself is inserted into the process block as soon as thinking starts, and native thinking-only streaming is suppressed while compact so it does not flash below the block. Config file only; takes effect after `/reload`. No slash command.
 
 ### Step categories
 

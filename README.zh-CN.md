@@ -83,7 +83,7 @@ pi remove npm:pi-minimal-mode && pi install /path/to/pi-rolling-process
 
 ```text
 /process                         展开 / 收起
-/process-lines 6                 收起时条数（1–20）
+/process-lines 10                收起时条数（1–20，默认 10）
 /process-lang auto               auto | zh | en
 /process-native                  查看当前是否隐藏原生工具块
 /process-native on|off           隐藏（on，默认）或显示（off）；即时生效
@@ -107,7 +107,7 @@ pi remove npm:pi-minimal-mode && pi install /path/to/pi-rolling-process
 
 ```json
 {
-  "maxVisibleLines": 6,
+  "maxVisibleLines": 10,
   "locale": "auto",
   "hideNativeTools": true,
   "hideWorkingIndicator": true,
@@ -154,7 +154,7 @@ pi remove npm:pi-minimal-mode && pi install /path/to/pi-rolling-process
 
 `hideWorkingIndicator`（默认 `true`）隐藏 Pi 原生 `Working…` 状态行，因为过程块已有自己的状态行。仅通过配置文件设置，修改后 `/reload` 生效；没有对应的 slash 命令。
 
-`hideThinkingLabel`（默认 `true`）在 Pi 隐藏思考时把 `Thinking…` 标签置空。仅通过配置文件设置，修改后 `/reload` 生效；没有对应的 slash 命令。
+`hideThinkingLabel`（默认 `true`）在 Pi 隐藏思考时把 `Thinking…` 标签置空。思考一开始就写入过程块；折叠态下原生「仅思考」流式输出会被压掉，避免先出现在过程块下方再收进去。仅通过配置文件设置，修改后 `/reload` 生效；没有对应的 slash 命令。
 
 ### 步骤分类
 
