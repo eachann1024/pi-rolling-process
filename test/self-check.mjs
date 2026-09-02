@@ -95,7 +95,8 @@ assert.match(src, /AssistantMessageComponent\.prototype/);
 assert.doesNotMatch(src, /compactAssistantText/);
 assert.doesNotMatch(src, /assistantLineIcon/);
 assert.match(src, /pi-rolling-process-steps/);
-assert.match(src, /maxVisibleLines: 5/);
+assert.match(src, /maxVisibleLines: 10/);
+assert.match(src, /isStreaming === true/);
 assert.match(src, /wrapTextWithAnsi/);
 assert.doesNotMatch(src, /maxVisibleAssistantLines/);
 assert.doesNotMatch(src, /process-assistant-lines/);
@@ -289,6 +290,87 @@ const { AssistantMessageComponent, ToolExecutionComponent } = await import(
   assert.equal(view.isFollowingEnd, true, "scrollBy to end re-locks follow");
 }
 
+// Viewport shrink (dock eating rows) must not yank a scrolled-up view.
+{
+  const view = new ScrollView(new Text("x"), { follow: "end" });
+  layout(view, 300, 40);
+  view.scrollBy(-60);
+  const pinned = view.scrollTop;
+  assert.equal(view.isFollowingEnd, false);
+  for (let vh = 39; vh >= 34; vh--) {
+    layout(view, 300, vh);
+    assert.equal(
+      view.scrollTop,
+      pinned,
+      `viewport ${vh} must keep scrolled-up scrollTop`,
+    );
+    assert.equal(
+      view.isFollowingEnd,
+      false,
+      `viewport ${vh} must keep followingEnd false`,
+    );
+  }
+}
+
+// Already at the bottom: viewport shrink still follows the end.
+{
+  const view = new ScrollView(new Text("x"), { follow: "end" });
+  layout(view, 300, 40);
+  assert.equal(view.isFollowingEnd, true);
+  layout(view, 300, 34);
+  assert.equal(view.isFollowingEnd, true, "at-end viewport shrink still follows");
+  assert.equal(view.scrollTop, 300 - 34);
+}
+
+// Degenerate layout (contentHeight === viewportHeight) must not drop a pin.
+{
+  const view = new ScrollView(new Text("x"), { follow: "end" });
+  layout(view, 200, 40);
+  view.scrollBy(-30);
+  const pinned = view.scrollTop;
+  assert.equal(view.isFollowingEnd, false);
+  layout(view, 200, 200);
+  layout(view, 250, 40);
+  assert.equal(
+    view.isFollowingEnd,
+    false,
+    "degenerate frame must not re-latch follow",
+  );
+  assert.equal(
+    view.scrollTop,
+    Math.min(pinned, 250 - 40),
+    "degenerate frame must restore pinned scrollTop",
+  );
+  assert.notEqual(view.scrollTop, 210, "must not yank to the new end");
+}
+
+// Degenerate layout with viewportHeight=0 must keep the scrolled-up offset.
+{
+  const view = new ScrollView(new Text("x"), { follow: "end" });
+  layout(view, 200, 40);
+  view.scrollBy(-50);
+  const pinned = view.scrollTop;
+  layout(view, 200, 0);
+  layout(view, 200, 40);
+  assert.equal(view.isFollowingEnd, false);
+  assert.equal(view.scrollTop, pinned, "viewport=0 degenerate must keep pin");
+}
+
+// Unpinned (still following) survive a degenerate frame and keep stick-to-end.
+{
+  const view = new ScrollView(new Text("x"), { follow: "end" });
+  layout(view, 200, 40);
+  assert.equal(view.isFollowingEnd, true);
+  layout(view, 200, 200);
+  layout(view, 250, 40);
+  assert.equal(
+    view.isFollowingEnd,
+    true,
+    "never-scrolled user must keep following after degenerate",
+  );
+  assert.equal(view.scrollTop, 250 - 40);
+}
+
 // Patch is idempotent across extension reloads.
 {
   const wrapped = ScrollView.prototype.updateLayout;
@@ -311,11 +393,13 @@ const { AssistantMessageComponent, ToolExecutionComponent } = await import(
   );
 }
 
+let toolsExpandedFlag = false;
 const ctx = {
   hasUI: true,
   cwd: process.cwd(),
   ui: {
     theme,
+    getToolsExpanded: () => toolsExpandedFlag,
     setWorkingVisible(v) {
       workingVisibleCalls.push(v);
     },
@@ -353,11 +437,12 @@ function emit(name, event) {
   );
   const sampleLines = ["hello", "", "  ", "\x1b[32m  \x1b[0m", "world"];
   const origContainerRender = Container.prototype.render;
-  const renderAssistant = (lines, hasToolCalls = false) => {
+  const renderAssistant = (lines, hasToolCalls = false, isStreaming = false) => {
     Container.prototype.render = () => lines.slice();
     try {
       const fake = Object.create(AssistantMessageComponent.prototype);
       fake.hasToolCalls = hasToolCalls;
+      fake.isStreaming = isStreaming;
       return fake
         .render(80)
         .map((l) => l.replace(/\x1b\]133;[ABC]\x07/g, ""));
@@ -372,6 +457,54 @@ function emit(name, event) {
     [],
     "intermediate assistant message must render nothing in transcript",
   );
+  assert.deepEqual(
+    renderAssistant(sampleLines, false, true),
+    [],
+    "streaming assistant must render nothing in compact mode",
+  );
+  {
+    Container.prototype.render = () => sampleLines.slice();
+    try {
+      const fake = Object.create(AssistantMessageComponent.prototype);
+      fake.hasToolCalls = false;
+      fake.isStreaming = true;
+      fake.lastMessage = { content: [{ type: "text", text: "hello" }] };
+      const out = fake
+        .render(80)
+        .map((l) => l.replace(/\x1b\]133;[ABC]\x07/g, ""));
+      assert.deepEqual(
+        out,
+        sampleLines,
+        "streaming final-answer text must stay native",
+      );
+    } finally {
+      Container.prototype.render = origContainerRender;
+    }
+  }
+  {
+    Container.prototype.render = () => sampleLines.slice();
+    try {
+      const fake = Object.create(AssistantMessageComponent.prototype);
+      fake.hasToolCalls = false;
+      fake.isStreaming = true;
+      fake.lastMessage = {
+        content: [
+          { type: "thinking", thinking: "plan" },
+          { type: "text", text: "I'll look around" },
+        ],
+      };
+      const out = fake
+        .render(80)
+        .map((l) => l.replace(/\x1b\]133;[ABC]\x07/g, ""));
+      assert.deepEqual(
+        out,
+        [],
+        "streaming thinking+text must not flash below the process box",
+      );
+    } finally {
+      Container.prototype.render = origContainerRender;
+    }
+  }
   // Final answers render exactly like stock Pi: no icon prefix, no compaction.
   assert.deepEqual(
     renderAssistant(sampleLines),
@@ -406,6 +539,11 @@ function emit(name, event) {
       renderAssistant(sampleLines, true),
       sampleLines,
       "minimal off (/process-native off) must restore native render",
+    );
+    assert.deepEqual(
+      renderAssistant(sampleLines, false, true),
+      sampleLines,
+      "minimal off must keep streaming native render",
     );
   } finally {
     proto[ASSISTANT_COMPACT_GETTER] = prevGetter;
@@ -1149,6 +1287,18 @@ assert.doesNotMatch(src, /working:\s*"/);
     message: { role: "assistant" },
     assistantMessageEvent: { type: "thinking_start" },
   });
+  {
+    const started = renderer(lastProcessEntry, { expanded: false }, theme).render(
+      80,
+    );
+    assert.ok(
+      started.some((l) => {
+        const p = stripRenderDecorations(l);
+        return /\s思考(\s|$)/.test(p) || /\sthink(\s|$)/.test(p);
+      }),
+      "thinking_start must insert a thought row before any delta",
+    );
+  }
   const flood = "x".repeat(4000);
   for (let i = 0; i < 40; i++) {
     emit("message_update", {
@@ -1339,53 +1489,90 @@ assert.doesNotMatch(src, /working:\s*"/);
 
 {
   const PROCESS_WIDGET_KEY = "pi-minimal-process";
-  const fakeCard = Object.create(ToolExecutionComponent.prototype);
-  fakeCard.expanded = true;
-  try {
-    fakeCard.render(80);
-  } catch {
-    // stub card has no constructor state; patch still records expanded
-  }
+  const processWidgetCalls = () =>
+    uiCalls.filter((c) => c[0] === "setWidget" && c[1] === PROCESS_WIDGET_KEY);
+  const countProcessSets = () =>
+    processWidgetCalls().filter((c) => c[2] !== undefined).length;
+  const countProcessClears = () =>
+    processWidgetCalls().filter((c) => c[2] === undefined).length;
+
+  toolsExpandedFlag = true;
+  emit("agent_start", { type: "agent_start" });
+  emit("message_end", {
+    type: "message_end",
+    message: { role: "user" },
+  });
   await Promise.resolve();
   assert.deepEqual(
     renderer(lastProcessEntry, { expanded: false }, theme).render(80),
     [],
-    "toolsExpanded must hide the transcript process placeholder",
+    "getToolsExpanded true must hide the transcript process placeholder",
   );
-  const docked = [...uiCalls]
-    .reverse()
-    .find((c) => c[0] === "setWidget" && c[1] === PROCESS_WIDGET_KEY);
-  assert.ok(docked, "toolsExpanded must call setWidget for the process dock");
+  const setsAfterDock = countProcessSets();
+  assert.equal(setsAfterDock, 1, "getToolsExpanded true docks setWidget once");
+  const docked = processWidgetCalls().at(-1);
   assert.notEqual(docked[2], undefined, "dock setWidget must pass a factory");
   assert.equal(
     docked[3]?.placement,
     "aboveEditor",
     "process widget must use aboveEditor",
   );
-  const dock = widgets.get(PROCESS_WIDGET_KEY);
-  assert.ok(dock && typeof dock.render === "function", "dock widget must render");
-  const dockLines = dock.render(80);
-  assert.ok(Array.isArray(dockLines), "widget render must return string[]");
-  assert.ok(
-    dockLines.length <= 10,
-    `widget lines must be ≤10, got ${dockLines.length}`,
-  );
-  assert.ok(dockLines.length >= 1, "widget must render the process box");
 
-  fakeCard.expanded = false;
-  try {
-    fakeCard.render(80);
-  } catch {
-    // stub card has no constructor state; patch still records collapsed
+  const clearsAfterDock = countProcessClears();
+  for (const expanded of [true, false, true, false, true]) {
+    const card = Object.create(ToolExecutionComponent.prototype);
+    card.expanded = expanded;
+    try {
+      card.render(80);
+    } catch {
+      // stub card has no constructor state
+    }
   }
   await Promise.resolve();
-  const cleared = [...uiCalls]
-    .reverse()
-    .find((c) => c[0] === "setWidget" && c[1] === PROCESS_WIDGET_KEY);
+  assert.equal(
+    countProcessSets(),
+    setsAfterDock,
+    "mixed tool-card expanded flags must not re-set the widget",
+  );
+  assert.equal(
+    countProcessClears(),
+    clearsAfterDock,
+    "mixed tool-card expanded flags must not clear the widget",
+  );
+
+  const dock = widgets.get(PROCESS_WIDGET_KEY);
+  assert.ok(dock && typeof dock.render === "function", "dock widget must render");
+  const heights = [];
+  for (let i = 0; i < 20; i++) {
+    emit("tool_execution_start", {
+      type: "tool_execution_start",
+      toolName: "bash",
+      toolCallId: `dock-h-${i}`,
+      args: { command: `echo ${i}` },
+    });
+    emit("tool_execution_end", {
+      type: "tool_execution_end",
+      toolCallId: `dock-h-${i}`,
+      isError: false,
+      result: { content: [{ type: "text", text: "ok" }] },
+    });
+    const lines = dock.render(80);
+    assert.ok(lines.length <= 10, `widget lines must be ≤10, got ${lines.length}`);
+    heights.push(lines.length);
+  }
+  assert.ok(
+    heights.every((h) => h === heights[0] && h > 0),
+    `widget height must stay fixed while steps grow, got ${heights[0]} → ${heights.at(-1)}`,
+  );
+
+  toolsExpandedFlag = false;
+  emit("agent_end", { type: "agent_end", messages: [] });
+  await Promise.resolve();
+  const cleared = processWidgetCalls().at(-1);
   assert.equal(
     cleared?.[2],
     undefined,
-    "collapsing native tools must setWidget(key, undefined)",
+    "getToolsExpanded false must setWidget(key, undefined)",
   );
   assert.ok(
     !widgets.has(PROCESS_WIDGET_KEY),
