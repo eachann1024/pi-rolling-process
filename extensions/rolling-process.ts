@@ -8,6 +8,7 @@
  * AssistantMessageComponent.render patch.
  */
 import {
+  appendFileSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -28,11 +29,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import {
+  isKeyRelease,
   matchesKey,
   ScrollView,
   stripTerminalSequences,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
 type StepCategory =
@@ -60,6 +63,13 @@ interface StepItem {
 interface RunSnapshot {
   runId: string;
   steps: StepItem[];
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+interface RunBounds {
+  startedAt?: number;
+  finishedAt?: number;
 }
 
 type LocalePref = "auto" | "zh" | "en";
@@ -96,8 +106,6 @@ interface ProcessConfig {
   hideNativeTools: boolean;
   hideWorkingIndicator: boolean;
   hideThinkingLabel: boolean;
-  compactAssistantText: boolean;
-  assistantLineIcon: string;
 }
 
 interface ProcessState {
@@ -105,6 +113,7 @@ interface ProcessState {
   steps: StepItem[];
   stepById: Map<string, StepItem>;
   snapshots: Map<string, StepItem[]>;
+  runBounds: Map<string, RunBounds>;
   runningToolStepIndex: number;
   hasError: boolean;
   hasAborted: boolean;
@@ -114,8 +123,6 @@ interface ProcessState {
   hideNativeTools: boolean;
   hideWorkingIndicator: boolean;
   hideThinkingLabel: boolean;
-  compactAssistantText: boolean;
-  assistantLineIcon: string;
   isAgentRunning: boolean;
   workingStartedAt?: number;
   workingEndedAt?: number;
@@ -128,7 +135,10 @@ interface ProcessState {
 }
 
 const ENTRY_TYPE = "pi-rolling-process";
+const ENTRY_TYPE_STEPS = "pi-rolling-process-steps";
 const TUI_PROBE_KEY = "pi-rolling-process-tui-probe";
+const PROCESS_WIDGET_KEY = "pi-minimal-process";
+const MAX_WIDGET_LINES = 10;
 const CONFIG_PATH = join(getAgentDir(), "rolling-process.json");
 const SNAP_PATH = join(getAgentDir(), "rolling-process-runs.json");
 const SNAPSHOT_KEEP = 80;
@@ -165,6 +175,10 @@ const BUILTIN_TOOLS = new Set([
 const SKILL_PATH_RE = /\/skills\/|SKILL\.md|\/\.agents\//;
 const PATCH_FLAG = Symbol.for("pi-rolling-process.toolRenderPatched");
 const HIDDEN_GETTER = Symbol.for("pi-rolling-process.toolHiddenGetter");
+const EXPANDED_LISTENERS = Symbol.for(
+  "pi-rolling-process.toolExpandedListeners",
+);
+let nativeToolsExpanded = false;
 const SCROLL_FOLLOW_PATCH_FLAG = Symbol.for(
   "pi-rolling-process.scrollFollowPatched",
 );
@@ -173,9 +187,6 @@ const ASSISTANT_PATCH_FLAG = Symbol.for(
 );
 const ASSISTANT_COMPACT_GETTER = Symbol.for(
   "pi-rolling-process.assistantCompactGetter",
-);
-const ASSISTANT_ICON_GETTER = Symbol.for(
-  "pi-rolling-process.assistantLineIconGetter",
 );
 
 const DEFAULT_CATEGORY_COLORS: Record<StepCategory, string> = {
@@ -231,39 +242,6 @@ const ASSISTANT_WEATHER_ICONS = [
   "🌨️",
 ] as const;
 
-const DEFAULT_ASSISTANT_LINE_ICON = ASSISTANT_WEATHER_ICONS[0];
-
-function assistantLinePrefix(icon: string): string {
-  return icon ? `${icon} ` : "";
-}
-
-function isWeatherCycleIcon(icon: string): boolean {
-  const bare = icon.trim().replace(/️/g, "");
-  return (ASSISTANT_WEATHER_ICONS as readonly string[]).some(
-    (cycle) => cycle.replace(/️/g, "") === bare,
-  );
-}
-
-function weatherLinePrefix(index: number): string {
-  const glyph =
-    ASSISTANT_WEATHER_ICONS[index % ASSISTANT_WEATHER_ICONS.length] ?? "☀️";
-  return ` ${glyph}  `;
-}
-
-function assistantPrefixFor(icon: string, index: number): string {
-  if (!icon) return "";
-  if (isWeatherCycleIcon(icon)) return weatherLinePrefix(index);
-  return assistantLinePrefix(icon);
-}
-
-function parseAssistantLineIcon(
-  value: unknown,
-  fallback = DEFAULT_ASSISTANT_LINE_ICON,
-): string {
-  if (typeof value !== "string") return fallback;
-  return value.trim() === "" ? fallback : value;
-}
-
 const BORDERS: Record<
   Exclude<BorderStyle, "none">,
   { tl: string; tr: string; bl: string; br: string; h: string; v: string }
@@ -276,8 +254,8 @@ const BORDERS: Record<
 const I18N = {
   zh: {
     title: "极简模式",
-    expandHint: "ctrl+o 展开 ctrl+alt+o 原始展开",
-    collapseHint: "ctrl+o 收起 ctrl+alt+o 原始展开",
+    expandHint: "ctrl+o 展开",
+    collapseHint: "ctrl+o 收起",
     thought: "思考",
     skill: "技能",
     subagent: "子代理",
@@ -287,7 +265,7 @@ const I18N = {
     linesSet: (n: number) => `收起时显示最新 ${n} 条`,
     linesHelp: "请输入 1 到 20，例如: /process-lines 5",
     cmdProcess: "展开/收起极简模式（ctrl+o；原生工具展开为 ctrl+alt+o）",
-    cmdLines: "设置收起时显示的条数（默认 8）",
+    cmdLines: "设置收起时显示的条数（默认 5）",
     thinkingNow: "思考中…",
     statusDone: (n: number) => `完成 · ${n} 步`,
     statusError: (n: number) => `出错 · ${n} 步`,
@@ -310,8 +288,8 @@ const I18N = {
   },
   en: {
     title: "Minimal",
-    expandHint: "ctrl+o expand ctrl+alt+o raw expand",
-    collapseHint: "ctrl+o collapse ctrl+alt+o raw expand",
+    expandHint: "ctrl+o expand",
+    collapseHint: "ctrl+o collapse",
     thought: "think",
     skill: "skill",
     subagent: "subagent",
@@ -322,7 +300,7 @@ const I18N = {
     linesHelp: "Enter 1-20, e.g. /process-lines 5",
     cmdProcess:
       "Expand/collapse Minimal mode (ctrl+o; native tool dump is ctrl+alt+o)",
-    cmdLines: "Rows shown when collapsed (default 8)",
+    cmdLines: "Rows shown when collapsed (default 5)",
     thinkingNow: "Thinking…",
     statusDone: (n: number) => `Done · ${n} steps`,
     statusError: (n: number) => `Error · ${n} steps`,
@@ -416,6 +394,13 @@ function fit(line: string, width: number): string {
   return fitMeasured(line, width).text;
 }
 
+function contentInnerWidth(width: number, style: ProcessStyle): number {
+  if (style.preset === "panel") return Math.max(1, width);
+  if (style.preset === "plain" || style.border === "none")
+    return Math.max(1, width);
+  return Math.max(1, width - 2);
+}
+
 function cleanString(str: unknown): string {
   return String(str ?? "")
     .replace(/\s+/g, " ")
@@ -432,6 +417,15 @@ function extractThoughtHeading(text: unknown): string {
     .replace(/^\*\*(.+)\*\*$/, "$1")
     .replace(/^__(.+)__$/, "$1")
     .replace(/^`(.+)`$/, "$1");
+}
+
+function processChromeLineCount(style: ProcessStyle): number {
+  const status = 1;
+  if (style.preset === "plain" || style.border === "none")
+    return (style.showHeader ? 1 : 0) + status;
+  if (style.preset === "panel")
+    return 2 + (style.showHeader ? 1 : 0) + status;
+  return 2 + status;
 }
 
 function formatDuration(ms: number): string {
@@ -601,12 +595,21 @@ function normalizeStep(step: StepItem & { category?: StepCategory }): StepItem {
   };
 }
 
-function patchToolCards(isHidden: () => boolean) {
+function patchToolCards(
+  isHidden: () => boolean,
+  onExpandedChange?: () => void,
+) {
   const proto = ToolExecutionComponent.prototype as unknown as Record<
     PropertyKey,
     unknown
   >;
   proto[HIDDEN_GETTER] = isHidden;
+  let listeners = proto[EXPANDED_LISTENERS] as Set<() => void> | undefined;
+  if (!listeners) {
+    listeners = new Set();
+    proto[EXPANDED_LISTENERS] = listeners;
+  }
+  if (onExpandedChange) listeners.add(onExpandedChange);
   if (proto[PATCH_FLAG]) return;
   const original = proto.render;
   if (typeof original !== "function") return;
@@ -615,8 +618,14 @@ function patchToolCards(isHidden: () => boolean) {
     this: { expanded?: boolean },
     width: number,
   ): string[] {
+    const expanded = this.expanded === true;
+    if (nativeToolsExpanded !== expanded) {
+      nativeToolsExpanded = expanded;
+      const notify = proto[EXPANDED_LISTENERS] as Set<() => void> | undefined;
+      if (notify) for (const fn of notify) fn();
+    }
     const hiddenGetter = proto[HIDDEN_GETTER] as (() => boolean) | undefined;
-    if (hiddenGetter?.() && this.expanded !== true) return [];
+    if (hiddenGetter?.() && !expanded) return [];
     return (original as (this: unknown, w: number) => string[]).call(
       this,
       width,
@@ -631,22 +640,66 @@ type ScrollViewInternals = {
   currentScrollTop: number;
   contentHeight: number;
   currentViewportHeight: number;
+  userScrollPending?: boolean;
 };
 
-// pi-tui ScrollView re-latches follow-end whenever a layout shrink pulls
-// maxScrollTop down to the cursor; that is a layout side effect, not the
-// user scrolling back. Restore followingEnd=false in that case so an
-// expanded transcript does not yank the user to the bottom on every frame.
-function patchScrollViewFollow() {
+const DEBUG_LOG_PATH = "/tmp/pi-minimal-mode-debug.log";
+const debugEnabled = Boolean(process.env.PI_MINIMAL_DEBUG);
+
+function debugLog(line: string, withStack = false) {
+  if (!debugEnabled) return;
+  try {
+    let out = `${new Date().toISOString()} ${line}\n`;
+    if (withStack) {
+      const stack = (new Error().stack ?? "").split("\n").slice(0, 8);
+      out += `${stack.join("\n")}\n`;
+    }
+    appendFileSync(DEBUG_LOG_PATH, out, "utf8");
+  } catch {
+    // debug logging must never break the extension
+  }
+}
+
+// pi-tui ScrollView re-latches follow-end inside updateLayout whenever the
+// clamped cursor lands exactly on maxScrollTop — a layout side effect, not
+// the user scrolling back. Only a deliberate scroll action (scrollBy /
+// scrollTo / scrollToStart / scrollToEnd) may flip followingEnd false→true;
+// any other re-latch is undone so an expanded transcript does not yank the
+// user to the bottom on every frame. Pi's own scrollToEnd sets followingEnd
+// directly and never passes through this guard.
+function patchScrollViewFollow(): boolean {
   try {
     const proto = ScrollView.prototype as unknown as Record<
       PropertyKey,
       unknown
     >;
-    if (proto[SCROLL_FOLLOW_PATCH_FLAG]) return;
-    const original = proto.updateLayout;
-    if (typeof original !== "function") return;
+    if (proto[SCROLL_FOLLOW_PATCH_FLAG]) return true;
+    const originalUpdate = proto.updateLayout;
+    if (typeof originalUpdate !== "function") return false;
     proto[SCROLL_FOLLOW_PATCH_FLAG] = true;
+    for (const name of ["scrollBy", "scrollTo", "scrollToStart", "scrollToEnd"]) {
+      const original = proto[name];
+      if (typeof original !== "function") continue;
+      proto[name] = function (this: ScrollViewInternals, ...args: unknown[]) {
+        if (debugEnabled && name === "scrollToEnd")
+          debugLog("scrollToEnd called", true);
+        const result = (original as (...a: unknown[]) => unknown).apply(
+          this,
+          args,
+        );
+        const maxScrollTop = Math.max(
+          0,
+          this.contentHeight - this.currentViewportHeight,
+        );
+        // Pi 0.84.4 scrollBy already clears followingEnd when next < max;
+        // keep the write explicit so an older tui cannot leave follow latched.
+        if (this.currentScrollTop < maxScrollTop) this.followingEnd = false;
+        // Only a deliberate scroll that landed on the end may allow a later
+        // updateLayout to re-latch; scrolling away must not.
+        this.userScrollPending = this.followingEnd === true;
+        return result;
+      };
+    }
     proto.updateLayout = function (
       this: ScrollViewInternals,
       contentHeight: number,
@@ -660,7 +713,7 @@ function patchScrollViewFollow() {
         this.contentHeight - this.currentViewportHeight,
       );
       (
-        original as (
+        originalUpdate as (
           this: unknown,
           c: number,
           v: number,
@@ -671,54 +724,53 @@ function patchScrollViewFollow() {
         0,
         this.contentHeight - this.currentViewportHeight,
       );
+      const pending = this.userScrollPending === true;
+      // Hard stop: layout must not yank a non-following viewport to the end.
       if (
         !wasFollowing &&
-        prevScrollTop < prevMax &&
-        this.followingEnd &&
-        newMax < prevMax
+        !pending &&
+        this.currentScrollTop === newMax &&
+        prevScrollTop < newMax
       ) {
-        // Clamp landed the cursor exactly on the end; mark it suppressed so
-        // further shrinks do not re-latch either. scrollBy/scrollTo/scrollToEnd
-        // clear the flag, so deliberate scrolls to the bottom still follow.
+        const yanked = this.currentScrollTop;
+        this.currentScrollTop = Math.min(prevScrollTop, newMax);
         this.followingEnd = false;
-        this.followSuppressedAtEnd = true;
+        if (debugEnabled)
+          debugLog(
+            `updateLayout undo-stick prevScrollTop=${prevScrollTop} newScrollTop=${yanked} restored=${this.currentScrollTop} max=${newMax}`,
+            true,
+          );
       }
+      if (!wasFollowing && this.followingEnd) {
+        const undone = !pending;
+        if (debugEnabled)
+          debugLog(
+            `updateLayout re-latch prevMax=${prevMax} newMax=${newMax} scrollTop=${this.currentScrollTop} userScrollPending=${pending} undone=${undone}`,
+            true,
+          );
+        if (undone) {
+          // Clamp landed the cursor exactly on the end; mark it suppressed so
+          // further layouts do not re-latch either. scrollBy/scrollTo/
+          // scrollToEnd clear the flag, so deliberate scrolls still follow.
+          this.followingEnd = false;
+          this.followSuppressedAtEnd = true;
+        }
+      }
+      this.userScrollPending = false;
     };
+    return true;
   } catch {
     // ScrollView internals changed; keep stock pi-tui behavior.
+    return false;
   }
 }
 
-function isBlankAssistantLine(line: string): boolean {
-  return stripTerminalSequences(line).trim() === "";
-}
-
-function compactAssistantLines(
-  lines: string[],
-  width: number,
-  icon: string,
-): string[] {
-  const out: string[] = [];
-  let index = 0;
-  for (const line of lines) {
-    if (isBlankAssistantLine(line)) continue;
-    const prefix = assistantPrefixFor(icon, index);
-    index++;
-    out.push(fit(`${prefix}${line}`, width));
-  }
-  return out;
-}
-
-function patchAssistantMessages(
-  isCompact: () => boolean,
-  getIcon: () => string,
-) {
+function patchAssistantMessages(isCompact: () => boolean) {
   const proto = AssistantMessageComponent.prototype as unknown as Record<
     PropertyKey,
     unknown
   >;
   proto[ASSISTANT_COMPACT_GETTER] = isCompact;
-  proto[ASSISTANT_ICON_GETTER] = getIcon;
   if (proto[ASSISTANT_PATCH_FLAG]) return;
   const original = proto.render;
   if (typeof original !== "function") return;
@@ -727,31 +779,14 @@ function patchAssistantMessages(
     const compactGetter = proto[ASSISTANT_COMPACT_GETTER] as
       | (() => boolean)
       | undefined;
-    const iconGetter = proto[ASSISTANT_ICON_GETTER] as
-      | (() => string)
-      | undefined;
-    const compact = Boolean(compactGetter?.());
-    if (!compact) {
-      return (original as (this: unknown, w: number) => string[]).call(
-        this,
-        width,
-      );
-    }
     const self = this as { hasToolCalls?: boolean };
     // Intermediate notes already live in the process box; do not repeat them.
-    if (self.hasToolCalls === true) return [];
-    const icon =
-      typeof iconGetter === "function"
-        ? iconGetter()
-        : DEFAULT_ASSISTANT_LINE_ICON;
-    const prefix = assistantPrefixFor(icon, 0);
-    const pw = visibleWidth(prefix);
-    const inner = Math.max(0, width - pw);
-    const lines = (original as (this: unknown, w: number) => string[]).call(
+    // Final answers render exactly like stock Pi.
+    if (compactGetter?.() && self.hasToolCalls === true) return [];
+    return (original as (this: unknown, w: number) => string[]).call(
       this,
-      inner,
+      width,
     );
-    return compactAssistantLines(lines, width, icon);
   };
 }
 
@@ -847,13 +882,11 @@ function parseStyle(raw: unknown): ProcessStyle {
 
 function loadConfig(): ProcessConfig {
   const fallback: ProcessConfig = {
-    maxVisibleLines: 8,
+    maxVisibleLines: 5,
     locale: "auto",
     hideNativeTools: true,
     hideWorkingIndicator: true,
     hideThinkingLabel: true,
-    compactAssistantText: true,
-    assistantLineIcon: DEFAULT_ASSISTANT_LINE_ICON,
     style: {
       ...DEFAULT_STYLE,
       icons: { ...DEFAULT_STYLE.icons },
@@ -871,8 +904,6 @@ function loadConfig(): ProcessConfig {
       hideNativeTools?: unknown;
       hideWorkingIndicator?: unknown;
       hideThinkingLabel?: unknown;
-      compactAssistantText?: unknown;
-      assistantLineIcon?: unknown;
     };
     const n = Number(parsed.maxVisibleLines);
     if (Number.isInteger(n) && n >= 1 && n <= 20) fallback.maxVisibleLines = n;
@@ -884,11 +915,6 @@ function loadConfig(): ProcessConfig {
       fallback.hideWorkingIndicator = parsed.hideWorkingIndicator;
     if (typeof parsed.hideThinkingLabel === "boolean")
       fallback.hideThinkingLabel = parsed.hideThinkingLabel;
-    if (typeof parsed.compactAssistantText === "boolean")
-      fallback.compactAssistantText = parsed.compactAssistantText;
-    fallback.assistantLineIcon = parseAssistantLineIcon(
-      parsed.assistantLineIcon,
-    );
   } catch {
     // default
   }
@@ -1107,6 +1133,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     steps: [],
     stepById: new Map(),
     snapshots: loadSnapshots(),
+    runBounds: new Map(),
     runningToolStepIndex: -1,
     hasError: false,
     hasAborted: false,
@@ -1116,8 +1143,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     hideNativeTools: config.hideNativeTools,
     hideWorkingIndicator: config.hideWorkingIndicator,
     hideThinkingLabel: config.hideThinkingLabel,
-    compactAssistantText: config.compactAssistantText,
-    assistantLineIcon: config.assistantLineIcon,
     isAgentRunning: false,
     entryCreated: false,
     thoughtBuffer: "",
@@ -1127,14 +1152,17 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     lastEntryRunId: "",
   };
 
-  patchToolCards(() => state.hideNativeTools);
-  patchAssistantMessages(
-    () => state.compactAssistantText,
-    () => state.assistantLineIcon,
-  );
-  patchScrollViewFollow();
-
   let capturedTui: { requestRender: () => void } | undefined;
+  let liveUiCtx: ExtensionContext | undefined;
+  let processWidgetDocked = false;
+  let onNativeExpandedChange = () => {};
+  patchToolCards(
+    () => state.hideNativeTools,
+    () => onNativeExpandedChange(),
+  );
+  patchAssistantMessages(() => state.hideNativeTools);
+  const scrollPatchApplied = patchScrollViewFollow();
+  debugLog(`scrollview-patch applied=${scrollPatchApplied}`);
   let spinnerTimer: ReturnType<typeof setInterval> | undefined;
   let persistedFingerprint = "";
   const renderCache = new Map<string, { sig: string; lines: string[] }>();
@@ -1157,6 +1185,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         showDuration: boolean;
         showStepIndex: boolean;
         showResult: boolean;
+        elapsed: string;
+        stepCap: number;
         lines: string[];
         running: (LiveCap & { slot: number; index: number })[];
         statusSlot: number;
@@ -1191,8 +1221,6 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       hideNativeTools: state.hideNativeTools,
       hideWorkingIndicator: state.hideWorkingIndicator,
       hideThinkingLabel: state.hideThinkingLabel,
-      compactAssistantText: state.compactAssistantText,
-      assistantLineIcon: state.assistantLineIcon,
     });
     if (ctx) applyUiPreferences(ctx, true);
   }
@@ -1255,6 +1283,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   let lastSpinnerFingerprint = "";
 
   function kickRender() {
+    syncProcessWidget();
     if (renderPending) return;
     renderPending = true;
     queueMicrotask(() => {
@@ -1262,6 +1291,74 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       capturedTui?.requestRender();
     });
   }
+
+  function rememberUiCtx(ctx: ExtensionContext) {
+    liveUiCtx = ctx;
+  }
+
+  function clipWidgetLines(lines: string[]): string[] {
+    if (lines.length <= MAX_WIDGET_LINES) return lines;
+    if (lines.length < 2) return lines.slice(0, MAX_WIDGET_LINES);
+    const inner = Math.max(0, MAX_WIDGET_LINES - 2);
+    return [lines[0]!, ...lines.slice(1, -1).slice(-inner), lines[lines.length - 1]!];
+  }
+
+  function renderDockedProcess(width: number, theme: Theme): string[] {
+    const runId = state.runId || state.lastEntryRunId;
+    if (!runId) return [];
+    const steps = stepsFor(runId);
+    const expanded = runId === state.expandedRunId;
+    const chrome = processChromeLineCount(state.style);
+    const budget = Math.max(0, MAX_WIDGET_LINES - chrome);
+    const cap = expanded
+      ? budget
+      : Math.min(state.maxVisibleLines, budget);
+    return clipWidgetLines(
+      renderProcess(
+        runId,
+        steps,
+        width,
+        theme,
+        expanded,
+        runId === state.runId,
+        cap,
+      ),
+    );
+  }
+
+  function syncProcessWidget() {
+    const ctx = liveUiCtx;
+    const show =
+      nativeToolsExpanded && Boolean(state.runId || state.lastEntryRunId);
+    if (show === processWidgetDocked) return;
+    if (!ctx) {
+      processWidgetDocked = false;
+      return;
+    }
+    withLiveUi(ctx, () => {
+      if (!show) {
+        ctx.ui.setWidget(PROCESS_WIDGET_KEY, undefined);
+        processWidgetDocked = false;
+        return;
+      }
+      ctx.ui.setWidget(
+        PROCESS_WIDGET_KEY,
+        (_tui, theme) => ({
+          render: (width: number) =>
+            renderDockedProcess(width, lastSeenTheme ?? theme),
+          invalidate: () => {},
+        }),
+        { placement: "aboveEditor" },
+      );
+      processWidgetDocked = true;
+    });
+  }
+
+  onNativeExpandedChange = () => {
+    bustRenderCache();
+    syncProcessWidget();
+    kickRender();
+  };
 
   function captureTui(ctx: ExtensionContext) {
     withLiveUi(ctx, () => {
@@ -1335,12 +1432,17 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     unsubTerminalInput?.();
     if (!ctx.hasUI) return;
     unsubTerminalInput = ctx.ui.onTerminalInput((data) => {
-      if (!state.isAgentRunning && !state.entryCreated && !state.lastEntryRunId)
-        return;
-      if (matchesKey(data, "ctrl+o")) {
-        toggleProcessExpanded();
+      if (!matchesKey(data, "ctrl+o")) return;
+      // Kitty protocol reports press and release separately; swallow the
+      // release so one keypress toggles exactly once.
+      if (isKeyRelease(data)) {
+        debugLog("ctrl+o release consumed");
         return { consume: true };
       }
+      if (!state.isAgentRunning && !state.entryCreated && !state.lastEntryRunId)
+        return;
+      toggleProcessExpanded();
+      return { consume: true };
     });
   }
 
@@ -1355,6 +1457,12 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     }
     state.snapshots.set(state.runId, cloneSteps(state.steps));
     persistedFingerprint = `${state.runId}:${fingerprint}`;
+    if (state.workingStartedAt) {
+      state.runBounds.set(state.runId, {
+        startedAt: state.workingStartedAt,
+        finishedAt: state.workingEndedAt,
+      });
+    }
     saveSnapshots(state.snapshots);
     if (renderCache.size > SNAPSHOT_KEEP + 4) {
       for (const key of renderCache.keys()) {
@@ -1364,20 +1472,78 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     }
   }
 
-  function stepsFor(runId: string | undefined): StepItem[] {
+  function stepsFor(
+    runId: string | undefined,
+    entrySteps?: StepItem[],
+  ): StepItem[] {
     if (runId && runId === state.runId) return state.steps;
     if (runId && state.snapshots.has(runId))
       return state.snapshots.get(runId) ?? [];
+    if (Array.isArray(entrySteps) && entrySteps.length > 0) return entrySteps;
     return [];
   }
 
-  function runElapsedMs(steps: StepItem[], live: boolean): number {
+  // Session entries outlive the sidecar snapshots (and branch switches): scan
+  // the current branch for stored step payloads and seed state.snapshots.
+  function restoreStepsEntries(ctx: ExtensionContext) {
+    try {
+      const branch = ctx.sessionManager?.getBranch?.() ?? [];
+      for (const raw of branch) {
+        const entry = raw as
+          | {
+              type?: string;
+              customType?: string;
+              data?: {
+                runId?: unknown;
+                steps?: unknown;
+                startedAt?: unknown;
+                finishedAt?: unknown;
+              };
+            }
+          | undefined;
+        if (
+          entry?.type !== "custom" ||
+          entry.customType !== ENTRY_TYPE_STEPS ||
+          typeof entry.data?.runId !== "string" ||
+          !Array.isArray(entry.data.steps)
+        )
+          continue;
+        state.snapshots.set(entry.data.runId, entry.data.steps as StepItem[]);
+        const startedAt =
+          typeof entry.data.startedAt === "number"
+            ? entry.data.startedAt
+            : undefined;
+        const finishedAt =
+          typeof entry.data.finishedAt === "number"
+            ? entry.data.finishedAt
+            : undefined;
+        if (startedAt !== undefined || finishedAt !== undefined)
+          state.runBounds.set(entry.data.runId, { startedAt, finishedAt });
+      }
+    } catch {
+      // no readable session entries
+    }
+  }
+
+  function runElapsedMs(
+    steps: StepItem[],
+    live: boolean,
+    runId?: string,
+  ): number {
     if (live && state.workingStartedAt) {
       const end = state.isAgentRunning
         ? Date.now()
         : (state.workingEndedAt ?? Date.now());
       return Math.max(0, end - state.workingStartedAt);
     }
+    const bounds = runId ? state.runBounds.get(runId) : undefined;
+    if (
+      bounds?.startedAt &&
+      bounds.startedAt > 0 &&
+      bounds.finishedAt &&
+      bounds.finishedAt >= bounds.startedAt
+    )
+      return bounds.finishedAt - bounds.startedAt;
     let minStart = Infinity;
     let maxEnd = 0;
     for (const step of steps) {
@@ -1470,8 +1636,9 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     steps: StepItem[],
     theme: Theme,
     live: boolean,
+    runId?: string,
   ): string {
-    const elapsed = formatDuration(runElapsedMs(steps, live));
+    const elapsed = formatDuration(runElapsedMs(steps, live, runId));
     const durCol = paintDurationCol(theme, elapsed);
     if (live && state.isAgentRunning) {
       return (
@@ -1562,12 +1729,55 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     return line;
   }
 
+  function renderNoteLines(
+    step: StepItem,
+    theme: Theme,
+    lang: UiLang,
+    inner: number,
+  ): string[] {
+    const single = renderStepLine(step, theme, lang);
+    if (inner < 8) return [single];
+    const style = state.style;
+    const prefix = stepLivePrefix(step, theme);
+    const kind = style.showKind
+      ? paintFg(
+          theme,
+          categoryColor(step, style),
+          `${categoryKindLabel(step, lang)} `,
+        )
+      : "";
+    const index = style.showStepIndex ? `${step.index}. ` : "";
+    const head = `${prefix} ${kind}${index}`;
+    const budget = Math.max(1, inner - 1);
+    const firstW = Math.max(1, budget - visibleWidth(head));
+    const detail = step.detail ?? "";
+    const firstParts = wrapTextWithAnsi(detail, firstW);
+    const first = firstParts[0] ?? "";
+    const lines = [`${head}${first}`];
+    let rest = detail.startsWith(first)
+      ? detail.slice(first.length).replace(/^\s+/, "")
+      : "";
+    if (!rest && firstParts.length > 1)
+      rest = detail.slice(first.length).replace(/^\s+/, "");
+    if (rest)
+      lines.push(
+        ...wrapTextWithAnsi(rest, budget).map((part) =>
+          visibleWidth(part) <= budget
+            ? part
+            : truncateToWidth(part, budget, ""),
+        ),
+      );
+    return lines;
+  }
+
   function renderStatusLine(
     steps: StepItem[],
     theme: Theme,
     live: boolean,
-    prefix = statusLivePrefix(steps, theme, live),
+    prefix?: string,
+    runId?: string,
   ): string {
+    const resolved = prefix ?? statusLivePrefix(steps, theme, live, runId);
     const ui = t();
     if (live && state.isAgentRunning) {
       let runningTool: StepItem | undefined;
@@ -1588,7 +1798,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       const label = runningTool
         ? categoryKindLabel(runningTool, detectUiLang(state.localePref))
         : ui.thinkingNow;
-      return `${prefix} ${label}`;
+      return `${resolved} ${label}`;
     }
     const outcome = runOutcome(steps);
     const text =
@@ -1597,7 +1807,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         : outcome === "aborted"
           ? ui.statusAborted(steps.length)
           : ui.statusDone(steps.length);
-    return `${prefix} ${text}`;
+    return `${resolved} ${text}`;
   }
 
   function liveLayout(
@@ -1663,24 +1873,30 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     theme: Theme,
     expanded: boolean,
     live: boolean,
+    stepCap?: number,
   ): string[] {
     const ui = t();
     const lang = detectUiLang(state.localePref);
     const style = state.style;
     const liveRunning = live && state.isAgentRunning;
+    const elapsedText = formatDuration(runElapsedMs(steps, live, runId));
     const cacheable = Boolean(runId) && !liveRunning;
     const cacheKey = runId ?? "";
+    const visLimit =
+      stepCap ?? (expanded ? steps.length : state.maxVisibleLines);
     const sig = cacheable
       ? [
           themeEpoch,
           width,
           expanded ? 1 : 0,
           lang,
-          state.maxVisibleLines,
+          visLimit,
+          stepCap ?? "",
           style.preset,
           style.border,
           style.showHeader ? 1 : 0,
           steps.length,
+          elapsedText,
           runOutcome(steps),
           steps.at(-1)?.id ?? "",
           steps.at(-1)?.status ?? "",
@@ -1692,9 +1908,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
       if (hit && hit.sig === sig) return hit.lines;
     }
 
-    const visStart = expanded
-      ? 0
-      : Math.max(0, steps.length - state.maxVisibleLines);
+    const visStart = Math.max(0, steps.length - visLimit);
     const visCount = steps.length - visStart;
 
     const liveHot = Boolean(liveRunning && runId);
@@ -1705,7 +1919,9 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         c.width === width &&
         c.expanded === expanded &&
         c.lang === lang &&
-        c.maxVisibleLines === state.maxVisibleLines &&
+        c.maxVisibleLines === visLimit &&
+        c.stepCap === (stepCap ?? -1) &&
+        c.elapsed === elapsedText &&
         c.stepsGen === stepsGen &&
         c.stepsLength === steps.length &&
         c.preset === style.preset &&
@@ -1737,10 +1953,10 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
             item.prefixLen = next.cap.prefixLen;
           }
         }
-        const statusPrefix = statusLivePrefix(steps, theme, live);
+        const statusPrefix = statusLivePrefix(steps, theme, live, runId);
         const statusNext = spliceLiveLine(c.statusCap, statusPrefix, () =>
           frameContentLine(
-            renderStatusLine(steps, theme, live, statusPrefix),
+            renderStatusLine(steps, theme, live, statusPrefix, runId),
             width,
             theme,
             style,
@@ -1759,32 +1975,48 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     const lines: string[] = [];
 
     if (style.showHeader) {
-      const shown = expanded ? steps.length : visCount;
+      const shown = expanded && stepCap === undefined ? steps.length : visCount;
       const parts = [
         steps.length === 0 ? ui.title : `${ui.title} ${shown}/${steps.length}`,
       ];
-      parts.push(expanded ? ui.collapseHint : ui.expandHint);
+      if (steps.length > 0 && elapsedText) parts.push(elapsedText);
+      if (steps.length > state.maxVisibleLines)
+        parts.push(expanded ? ui.collapseHint : ui.expandHint);
       lines.push(paintFg(theme, style.colors.header, parts.join(" · ")));
     }
 
-    const livePrefixes: { index: number; prefix: string }[] = [];
+    const livePrefixes: { index: number; prefix: string; visual: number }[] =
+      [];
     let statusPrefix = "";
+    let stepVisual = 0;
     for (let i = visStart; i < steps.length; i++) {
       const step = steps[i];
       if (!step) continue;
+      const visualAt = stepVisual;
       if (liveHot && step.status === "running") {
         const prefix = stepLivePrefix(step, theme);
-        livePrefixes.push({ index: i, prefix });
+        livePrefixes.push({ index: i, prefix, visual: visualAt });
         lines.push(renderStepLineCore(step, theme, lang, prefix));
+        stepVisual += 1;
+      } else if (step.type === "note") {
+        const wrapped = renderNoteLines(
+          step,
+          theme,
+          lang,
+          contentInnerWidth(width, style),
+        );
+        lines.push(...wrapped);
+        stepVisual += wrapped.length;
       } else {
         lines.push(renderStepLine(step, theme, lang));
+        stepVisual += 1;
       }
     }
     if (liveHot) {
-      statusPrefix = statusLivePrefix(steps, theme, live);
-      lines.push(renderStatusLine(steps, theme, live, statusPrefix));
+      statusPrefix = statusLivePrefix(steps, theme, live, runId);
+      lines.push(renderStatusLine(steps, theme, live, statusPrefix, runId));
     } else {
-      lines.push(renderStatusLine(steps, theme, live));
+      lines.push(renderStatusLine(steps, theme, live, undefined, runId));
     }
 
     if (lines.length === 0) return [];
@@ -1796,10 +2028,10 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     else painted = paintBox(lines, width, theme, style);
 
     if (liveHot && runId) {
-      const { firstStep, statusSlot } = liveLayout(style, visCount);
+      const { firstStep, statusSlot } = liveLayout(style, stepVisual);
       const running: (LiveCap & { slot: number; index: number })[] = [];
       for (const item of livePrefixes) {
-        const slot = firstStep + (item.index - visStart);
+        const slot = firstStep + item.visual;
         const cap = captureLiveSlot(painted[slot], item.prefix);
         running.push({
           slot,
@@ -1815,7 +2047,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         width,
         expanded,
         lang,
-        maxVisibleLines: state.maxVisibleLines,
+        maxVisibleLines: visLimit,
         stepsGen,
         stepsLength: steps.length,
         preset: style.preset,
@@ -1825,6 +2057,8 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
         showDuration: style.showDuration,
         showStepIndex: style.showStepIndex,
         showResult: style.showResult,
+        elapsed: elapsedText,
+        stepCap: stepCap ?? -1,
         lines: painted,
         running,
         statusSlot,
@@ -2008,7 +2242,9 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
   function toggleProcessExpanded() {
     const target = state.runId || state.lastEntryRunId;
     if (!target) return;
+    const before = state.expandedRunId;
     state.expandedRunId = state.expandedRunId === target ? "" : target;
+    debugLog(`toggle expandedRunId ${before || "(none)"} -> ${state.expandedRunId || "(none)"}`);
     bustRenderCache();
     kickRender();
   }
@@ -2114,15 +2350,17 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     }
     const runId = entry.data?.runId;
     return {
-      render: (width: number) =>
-        renderProcess(
+      render: (width: number) => {
+        if (nativeToolsExpanded) return [];
+        return renderProcess(
           runId,
-          stepsFor(runId),
+          stepsFor(runId, entry.data?.steps),
           width,
           theme,
           Boolean(runId && runId === state.expandedRunId),
           runId === state.runId,
-        ),
+        );
+      },
       invalidate: () => {
         if (runId) renderCache.delete(runId);
         if (liveStable?.runId === runId) liveStable = undefined;
@@ -2130,12 +2368,27 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     };
   });
 
+  // Returning undefined (not an empty component) avoids Pi's Spacer child.
+  pi.registerEntryRenderer(ENTRY_TYPE_STEPS, () => undefined);
+
+  pi.on("session_tree", (_event, ctx) => {
+    rememberUiCtx(ctx);
+    restoreStepsEntries(ctx);
+    state.lastEntryRunId = latestEntryRunId(ctx);
+    bustRenderCache();
+    syncProcessWidget();
+    kickRender();
+  });
+
   pi.on("session_shutdown", (_event, ctx) => {
     stopSpinnerTimer();
     capturedTui = undefined;
     withLiveUi(ctx, () => {
+      ctx.ui.setWidget(PROCESS_WIDGET_KEY, undefined);
       ctx.ui.setWidget(TUI_PROBE_KEY, undefined);
     });
+    processWidgetDocked = false;
+    liveUiCtx = undefined;
     unsubTerminalInput?.();
     unsubTerminalInput = undefined;
     flushSnapshotsSync();
@@ -2158,6 +2411,7 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     appleLocaleAllowed = true;
     stopSpinnerTimer();
     capturedTui = undefined;
+    rememberUiCtx(ctx);
     state.steps = [];
     resetRunAggregates();
     state.runId = "";
@@ -2170,17 +2424,16 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.thoughtLineLocked = false;
     persistedFingerprint = "";
     state.lastEntryRunId = latestEntryRunId(ctx);
+    state.snapshots = loadSnapshots();
+    restoreStepsEntries(ctx);
     if (event.reason === "reload") {
       const loaded = loadConfig();
-      state.snapshots = loadSnapshots();
       state.maxVisibleLines = loaded.maxVisibleLines;
       state.localePref = loaded.locale;
       state.style = loaded.style;
       state.hideNativeTools = loaded.hideNativeTools;
       state.hideWorkingIndicator = loaded.hideWorkingIndicator;
       state.hideThinkingLabel = loaded.hideThinkingLabel;
-      state.compactAssistantText = loaded.compactAssistantText;
-      state.assistantLineIcon = loaded.assistantLineIcon;
     }
     snapshotShutdownFlushed = false;
     bustRenderCache();
@@ -2188,10 +2441,12 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     registerProcessCommands();
     bindCtrlO(ctx);
     applyUiPreferences(ctx, true);
+    syncProcessWidget();
   });
 
   pi.on("agent_start", (_event, ctx) => {
     persistCurrentRun();
+    rememberUiCtx(ctx);
     state.isAgentRunning = true;
     state.workingStartedAt = Date.now();
     state.workingEndedAt = undefined;
@@ -2289,6 +2544,21 @@ function createRollingProcessExtension(pi: ExtensionAPI) {
     state.isAgentRunning = false;
     state.workingEndedAt = Date.now();
     ensureTranscriptEntry();
+    if (state.runId) {
+      const finishedAt = state.workingEndedAt ?? Date.now();
+      const startedAt = state.workingStartedAt;
+      state.runBounds.set(state.runId, { startedAt, finishedAt });
+      // appendEntry is append-only, so the finished steps ride in a separate
+      // invisible entry; session restore rebuilds snapshots from these.
+      pi.appendEntry(ENTRY_TYPE_STEPS, {
+        runId: state.runId,
+        steps: cloneSteps(state.steps),
+        startedAt,
+        finishedAt,
+        status: runOutcome(state.steps),
+      });
+    }
+    syncProcessWidget();
     kickRender();
   });
 
