@@ -52,7 +52,8 @@ installBareSpecifierAliases(piAgentDir, piTuiDir);
 isolateAgentDir();
 
 const tui = await import(pathToFileURL(join(piTuiDir, "dist/index.js")).href);
-const { Container, ScrollView, Text, visibleWidth, matchesKey } = tui;
+const { Container, ScrollView, Text, visibleWidth, matchesKey, isKeyRelease } =
+  tui;
 
 function layout(view, contentHeight, viewportHeight) {
   view.updateLayout(contentHeight, viewportHeight, () => {});
@@ -85,15 +86,17 @@ function layout(view, contentHeight, viewportHeight) {
 
 assert.match(src, /"⠀⢀"/);
 assert.match(src, /"⡀⠀"/);
-assert.doesNotMatch(src, /placement: "aboveEditor"/);
+assert.match(src, /placement: "aboveEditor"/);
 assert.match(src, /matchesKey\(data, "ctrl\+o"\)/);
 assert.match(src, /onTerminalInput/);
 assert.doesNotMatch(src, /registerShortcut\("ctrl\+o",/);
 assert.match(src, /ToolExecutionComponent\.prototype/);
 assert.match(src, /AssistantMessageComponent\.prototype/);
-assert.match(src, /compactAssistantText/);
-assert.match(src, /assistantLineIcon/);
-assert.match(src, /maxVisibleLines: 8/);
+assert.doesNotMatch(src, /compactAssistantText/);
+assert.doesNotMatch(src, /assistantLineIcon/);
+assert.match(src, /pi-rolling-process-steps/);
+assert.match(src, /maxVisibleLines: 5/);
+assert.match(src, /wrapTextWithAnsi/);
 assert.doesNotMatch(src, /maxVisibleAssistantLines/);
 assert.doesNotMatch(src, /process-assistant-lines/);
 assert.doesNotMatch(src, /renderShell: "self"/);
@@ -132,7 +135,9 @@ const uiCalls = [];
 const workingVisibleCalls = [];
 const hiddenThinkingLabelCalls = [];
 let renderer;
+let stepsRenderer;
 let lastEntry;
+let lastProcessEntry;
 let requestRenderCount = 0;
 let widgetComponent;
 const widgets = new Map();
@@ -150,13 +155,15 @@ const fakeTui = {
 };
 
 const pi = {
-  appendEntry(_type, data) {
-    lastEntry = { data };
+  appendEntry(type, data) {
+    lastEntry = { type, data };
+    if (type === "pi-rolling-process") lastProcessEntry = lastEntry;
     uiCalls.push(["appendEntry", data]);
     return "e1";
   },
-  registerEntryRenderer(_type, fn) {
-    renderer = fn;
+  registerEntryRenderer(type, fn) {
+    if (type === "pi-rolling-process-steps") stepsRenderer = fn;
+    else renderer = fn;
   },
   registerCommand() {},
   registerShortcut(id, opts) {
@@ -216,6 +223,72 @@ const { AssistantMessageComponent, ToolExecutionComponent } = await import(
   assert.equal(view.isFollowingEnd, true);
 }
 
+// Patched: growing the viewport while scrolled up must not re-latch.
+{
+  const view = new ScrollView(new Text("x"), { follow: "end" });
+  layout(view, 200, 40);
+  view.scrollBy(-30);
+  assert.equal(view.isFollowingEnd, false);
+  layout(view, 200, 80);
+  assert.equal(
+    view.isFollowingEnd,
+    false,
+    "patched: viewport growth must not re-latch follow",
+  );
+  layout(view, 200, 80);
+  layout(view, 200, 80);
+  assert.equal(
+    view.isFollowingEnd,
+    false,
+    "patched: repeated layouts must not re-latch follow",
+  );
+}
+
+// Patched: scrollToEnd still follows the end.
+{
+  const view = new ScrollView(new Text("x"), { follow: "end" });
+  layout(view, 200, 40);
+  view.scrollBy(-30);
+  assert.equal(view.isFollowingEnd, false);
+  view.scrollToEnd();
+  assert.equal(view.isFollowingEnd, true, "scrollToEnd must follow");
+  layout(view, 220, 40);
+  assert.equal(view.isFollowingEnd, true, "growth after scrollToEnd follows");
+}
+
+// Patched: scrolled-up growth (new children / extra frames) must keep scrollTop.
+{
+  const inner = new Container();
+  inner.addChild(new Text("x"));
+  const view = new ScrollView(inner, { follow: "end" });
+  layout(view, 200, 40);
+  view.scrollBy(-30);
+  assert.equal(view.isFollowingEnd, false);
+  const pinned = view.scrollTop;
+  for (let i = 1; i <= 6; i++) {
+    inner.addChild(new Text(`n${i}`));
+    layout(view, 200 + i * 12, 40);
+    assert.equal(
+      view.scrollTop,
+      pinned,
+      `growth frame ${i} must keep scrollTop`,
+    );
+    assert.equal(
+      view.isFollowingEnd,
+      false,
+      `growth frame ${i} must keep followingEnd false`,
+    );
+  }
+  view.scrollToEnd();
+  assert.equal(view.isFollowingEnd, true, "End key scrollToEnd re-locks follow");
+  layout(view, 290, 40);
+  assert.equal(view.isFollowingEnd, true, "follow stays after End + growth");
+  view.scrollBy(-20);
+  assert.equal(view.isFollowingEnd, false);
+  view.scrollBy(20);
+  assert.equal(view.isFollowingEnd, true, "scrollBy to end re-locks follow");
+}
+
 // Patch is idempotent across extension reloads.
 {
   const wrapped = ScrollView.prototype.updateLayout;
@@ -250,8 +323,8 @@ const ctx = {
       hiddenThinkingLabelCalls.push(v);
     },
     notify: (msg) => uiCalls.push(["notify", msg]),
-    setWidget: (key, content) => {
-      uiCalls.push(["setWidget", key]);
+    setWidget: (key, content, options) => {
+      uiCalls.push(["setWidget", key, content, options]);
       if (content === undefined) {
         widgets.delete(key);
         return;
@@ -278,22 +351,7 @@ function emit(name, event) {
   const ASSISTANT_COMPACT_GETTER = Symbol.for(
     "pi-rolling-process.assistantCompactGetter",
   );
-  const ASSISTANT_ICON_GETTER = Symbol.for(
-    "pi-rolling-process.assistantLineIconGetter",
-  );
-  const weatherBlock = src.match(
-    /const ASSISTANT_WEATHER_ICONS = \[([\s\S]*?)\];/,
-  );
-  const weatherIcons = [...(weatherBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(
-    (m) => m[1],
-  );
-  assert.ok(weatherIcons.length >= 4, "weather icon sequence");
-  const weatherPrefix = (i) => ` ${weatherIcons[i % weatherIcons.length]}  `;
   const sampleLines = ["hello", "", "  ", "\x1b[32m  \x1b[0m", "world"];
-  const compactExpected = [
-    `${weatherPrefix(0)}hello`,
-    `${weatherPrefix(1)}world`,
-  ];
   const origContainerRender = Container.prototype.render;
   const renderAssistant = (lines, hasToolCalls = false) => {
     Container.prototype.render = () => lines.slice();
@@ -314,8 +372,12 @@ function emit(name, event) {
     [],
     "intermediate assistant message must render nothing in transcript",
   );
-  // Final answers keep the compact weather prefix.
-  assert.deepEqual(renderAssistant(sampleLines), compactExpected);
+  // Final answers render exactly like stock Pi: no icon prefix, no compaction.
+  assert.deepEqual(
+    renderAssistant(sampleLines),
+    sampleLines,
+    "final answer must use the native render untouched",
+  );
 
   {
     const width = 20;
@@ -328,12 +390,8 @@ function emit(name, event) {
       const fake = Object.create(AssistantMessageComponent.prototype);
       fake.hasToolCalls = false;
       const out = fake.render(width);
-      assert.equal(seenWidth, width - visibleWidth(weatherPrefix(0)));
+      assert.equal(seenWidth, width, "final answer render keeps full width");
       assert.ok(out.length >= 1);
-      assert.ok(
-        visibleWidth(out[0]) <= width,
-        `compact assistant line ${visibleWidth(out[0])} > ${width}: ${out[0]}`,
-      );
     } finally {
       Container.prototype.render = origContainerRender;
     }
@@ -347,30 +405,10 @@ function emit(name, event) {
     assert.deepEqual(
       renderAssistant(sampleLines, true),
       sampleLines,
-      "compact off (e.g. /process-native off style) must restore native render",
+      "minimal off (/process-native off) must restore native render",
     );
   } finally {
     proto[ASSISTANT_COMPACT_GETTER] = prevGetter;
-  }
-
-  const prevIcon = proto[ASSISTANT_ICON_GETTER];
-  proto[ASSISTANT_ICON_GETTER] = () => "";
-  try {
-    assert.deepEqual(renderAssistant(sampleLines), ["hello", "world"]);
-  } finally {
-    proto[ASSISTANT_ICON_GETTER] = prevIcon;
-  }
-
-  // Legacy configs may store the icon with VS16; it must still cycle.
-  proto[ASSISTANT_ICON_GETTER] = () => "☀️";
-  try {
-    assert.deepEqual(
-      renderAssistant(sampleLines),
-      compactExpected,
-      "VS16 weather icon from old config must still be treated as cycle",
-    );
-  } finally {
-    proto[ASSISTANT_ICON_GETTER] = prevIcon;
   }
 
   const renderOnce = AssistantMessageComponent.prototype.render;
@@ -387,7 +425,7 @@ function emit(name, event) {
   const ext2 = await loadExtension(join(root, "extensions/rolling-process.ts"));
   ext2.default(dummyPi);
   assert.equal(AssistantMessageComponent.prototype.render, renderOnce);
-  assert.deepEqual(renderAssistant(sampleLines), compactExpected);
+  assert.deepEqual(renderAssistant(sampleLines), sampleLines);
 }
 
 assert.doesNotMatch(src, /assistantFoldRuns|foldAssistantWindow/);
@@ -408,8 +446,8 @@ function visibleLineWidth(line) {
 
 function collapsedRender(width) {
   assert.ok(renderer, "registerEntryRenderer must run");
-  assert.ok(lastEntry, "appendEntry must have created an entry");
-  const comp = renderer(lastEntry, { expanded: false }, theme);
+  assert.ok(lastProcessEntry, "appendEntry must have created an entry");
+  const comp = renderer(lastProcessEntry, { expanded: false }, theme);
   const lines = comp.render(width);
   assert.ok(Array.isArray(lines), `render(${width}) must return string[]`);
   for (const line of lines) {
@@ -678,15 +716,32 @@ assert.doesNotMatch(
   /已折叠|\bhidden\b/,
   "collapsed header must not show hidden-step count",
 );
+{
+  const headerPlain = stripRenderDecorations(lines80[0] ?? "");
+  const elapsedMatch = headerPlain.match(
+    /(?:^|[·])\s*(\d+(?:\.\d+)?(?:ms|s)|[1-9]\d*m\d+s)\b/,
+  );
+  assert.ok(elapsedMatch, `header must include elapsed time: ${headerPlain}`);
+  assert.doesNotMatch(
+    headerPlain,
+    /总耗时|\btotal\b|展开\/收起|expand\/collapse|ctrl\+alt\+o/,
+    `header copy must stay light: ${headerPlain}`,
+  );
+  const dur = elapsedMatch[1];
+  assert.ok(dur, "elapsed token must be non-empty");
+  assert.ok(
+    lines80.some((l) => stripRenderDecorations(l).includes(dur)),
+    `status duration must match title (${dur})`,
+  );
+}
 for (const width of [12, 20, 40]) {
   let lines;
   assert.doesNotThrow(() => {
     lines = collapsedRender(width);
   }, `render(${width}) must not throw`);
-  assert.equal(
-    lines.length,
-    lines80.length,
-    `collapsed line count at width ${width} must match render(80)`,
+  assert.ok(
+    lines.length >= 1,
+    `collapsed render(${width}) must return at least one line`,
   );
 }
 
@@ -742,8 +797,9 @@ for (const width of [12, 20, 40]) {
   // Note steps rotate weather icons (not ✅) with a consistent prefix width.
   const weatherIcons = [
     ...(src
-      .match(/const ASSISTANT_WEATHER_ICONS = \[([\s\S]*?)\];/)?.[1] ?? "")
-      .matchAll(/"([^"]+)"/g),
+      .match(/const ASSISTANT_WEATHER_ICONS = \[([\s\S]*?)\] as const/)?.[1] ??
+      ""
+    ).matchAll(/"([^"]+)"/g),
   ].map((m) => m[1]);
   for (const icon of weatherIcons) {
     assert.equal(
@@ -775,6 +831,251 @@ for (const width of [12, 20, 40]) {
     prefixWidths.every((w) => w === prefixWidths[0]),
     `note icon columns must align: ${prefixWidths}`,
   );
+}
+
+// agent_end appends an invisible steps entry so history survives reloads.
+const finishedRunId = lastEntry?.data?.runId;
+const finishedSteps = lastEntry?.data?.steps;
+{
+  assert.equal(
+    lastEntry?.type,
+    "pi-rolling-process-steps",
+    "agent_end must append a steps entry after the placeholder",
+  );
+  assert.ok(finishedRunId, "steps entry must carry runId");
+  assert.ok(Array.isArray(finishedSteps), "steps entry must carry steps");
+  assert.equal(
+    finishedSteps.filter((s) => s.type === "tool").length,
+    4,
+    "steps entry must contain all tool steps",
+  );
+  assert.equal(
+    finishedSteps.filter((s) => s.type === "note").length,
+    5,
+    "steps entry must contain all note steps",
+  );
+  assert.ok(
+    uiCalls.filter((c) => c[0] === "appendEntry").length >= 2,
+    "placeholder + steps entries must both be appended",
+  );
+  assert.ok(typeof lastEntry?.data?.startedAt === "number", "steps entry must carry startedAt");
+  assert.ok(typeof lastEntry?.data?.finishedAt === "number", "steps entry must carry finishedAt");
+  assert.ok(stepsRenderer, "steps entry renderer must be registered");
+  assert.equal(
+    stepsRenderer(lastEntry, { expanded: false }, theme),
+    undefined,
+    "steps entry renderer must return undefined (no Spacer line)",
+  );
+}
+
+// A fresh session (not reload) rebuilds snapshots from branch entries.
+{
+  const branch = [
+    { type: "custom", customType: "pi-rolling-process", data: { runId: finishedRunId, steps: [] } },
+    { type: "custom", customType: "pi-rolling-process-steps", data: { runId: finishedRunId, steps: finishedSteps, startedAt: lastEntry.data.startedAt, finishedAt: lastEntry.data.finishedAt } },
+  ];
+  const ctxRestore = {
+    ...ctx,
+    sessionManager: { getBranch: () => branch },
+  };
+  handlers.get("session_start")({ type: "session_start", reason: "new" }, ctxRestore);
+  const restored = renderer(
+    { data: { runId: finishedRunId, steps: [] } },
+    { expanded: false },
+    theme,
+  ).render(80);
+  assert.equal(
+    restored.length,
+    lines80.length,
+    "restored session must render the full process box, not an empty shell",
+  );
+  assert.ok(
+    restored.some((l) => l.includes("先读文档")),
+    "restored render must contain note steps",
+  );
+  const restoredHeader = stripRenderDecorations(restored[0] ?? "");
+  const restoredDur = restoredHeader.match(
+    /(?:^|[·])\s*(\d+(?:\.\d+)?(?:ms|s)|[1-9]\d*m\d+s)\b/,
+  );
+  assert.ok(
+    restoredDur,
+    `restored header must include elapsed: ${restoredHeader}`,
+  );
+}
+
+{
+  const timedRunId = "timed-run";
+  const startedAt = 1_000;
+  const finishedAt = 3_500;
+  const ctxTimed = {
+    ...ctx,
+    sessionManager: {
+      getBranch: () => [
+        {
+          type: "custom",
+          customType: "pi-rolling-process",
+          data: { runId: timedRunId, steps: [] },
+        },
+        {
+          type: "custom",
+          customType: "pi-rolling-process-steps",
+          data: {
+            runId: timedRunId,
+            steps: [
+              {
+                id: "t1",
+                index: 1,
+                type: "tool",
+                category: "builtin",
+                name: "bash",
+                detail: "true",
+                status: "done",
+                startTime: startedAt,
+                endTime: finishedAt,
+              },
+            ],
+            startedAt,
+            finishedAt,
+          },
+        },
+      ],
+    },
+  };
+  handlers.get("session_start")({ type: "session_start", reason: "new" }, ctxTimed);
+  const timedLines = renderer(
+    { data: { runId: timedRunId, steps: [] } },
+    { expanded: false },
+    theme,
+  ).render(80);
+  const timedHeader = stripRenderDecorations(timedLines[0] ?? "");
+  assert.match(
+    timedHeader,
+    /(?:^|[·])\s*2\.5s\b/,
+    `historical restore must use startedAt/finishedAt: ${timedHeader}`,
+  );
+  assert.doesNotMatch(
+    timedHeader,
+    /总耗时|\btotal\b|ctrl\+o/,
+    `short run must show time only, no expand hint: ${timedHeader}`,
+  );
+}
+
+// /tree branch switch: session_tree re-reads steps entries from the branch.
+{
+  const branchSteps = [
+    {
+      type: "custom",
+      customType: "pi-rolling-process-steps",
+      data: { runId: "branch-run", steps: finishedSteps },
+    },
+  ];
+  const ctxTree = {
+    ...ctx,
+    sessionManager: { getBranch: () => branchSteps },
+  };
+  const treeHandler = handlers.get("session_tree");
+  assert.ok(treeHandler, "session_tree handler must be registered");
+  const before = renderer(
+    { data: { runId: "branch-run", steps: [] } },
+    { expanded: false },
+    theme,
+  ).render(80);
+  treeHandler({ type: "session_tree" }, ctxTree);
+  const after = renderer(
+    { data: { runId: "branch-run", steps: [] } },
+    { expanded: false },
+    theme,
+  ).render(80);
+  assert.ok(
+    !before.some((l) => l.includes("先读文档")),
+    "unknown branch run must not show steps before session_tree",
+  );
+  assert.ok(
+    after.length > before.length &&
+      after.some((l) => l.includes("先读文档")),
+    "session_tree must make branch steps visible",
+  );
+}
+
+// session_start must survive a throwing getBranch and missing UI.
+{
+  const ctxBroken = {
+    ...ctx,
+    hasUI: false,
+    sessionManager: {
+      getBranch() {
+        throw new Error("no branch");
+      },
+    },
+  };
+  assert.doesNotThrow(() =>
+    handlers.get("session_start")(
+      { type: "session_start", reason: "startup" },
+      ctxBroken,
+    ),
+  );
+  // Restore the normal session state for the following blocks.
+  emit("session_start", { type: "session_start", reason: "startup" });
+}
+
+{
+  const weatherIcons = [
+    ...(src
+      .match(/const ASSISTANT_WEATHER_ICONS = \[([\s\S]*?)\] as const/)?.[1] ?? "")
+      .matchAll(/"([^"]+)"/g),
+  ].map((m) => m[1]);
+  const longNote =
+    "也就是说按报告一是没有明确有数据的账套可删按报告二有两个账套可判定为明确有数据所以要先定删除口径并且按每个账套在两个登录账号下的真实可用情况来分组";
+  emit("agent_start", { type: "agent_start" });
+  emit("message_end", { type: "message_end", message: { role: "user" } });
+  emit("message_end", {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: longNote },
+        {
+          type: "toolCall",
+          id: "c-wrap",
+          name: "read",
+          arguments: { path: "c" },
+        },
+      ],
+    },
+  });
+  const wrapRender = collapsedLines();
+  const startIdx = wrapRender.findIndex((l) =>
+    stripRenderDecorations(stripBoxChrome(l)).includes(longNote.slice(0, 6)),
+  );
+  assert.ok(startIdx >= 0, "long note first line must be visible");
+  const wrapChunk = [];
+  for (let i = startIdx; i < wrapRender.length; i++) {
+    const plain = stripRenderDecorations(stripBoxChrome(wrapRender[i]));
+    if (
+      i > startIdx &&
+      (weatherIcons.some((icon) => wrapRender[i].includes(icon)) ||
+        /完成|Done/.test(plain))
+    )
+      break;
+    wrapChunk.push(wrapRender[i]);
+  }
+  assert.ok(wrapChunk.length >= 2, "long note must wrap instead of ellipsis");
+  const joined = wrapChunk
+    .map((l) => stripRenderDecorations(stripBoxChrome(l)))
+    .join("");
+  assert.ok(joined.includes(longNote.slice(0, 10)), "wrap keeps note head");
+  assert.ok(joined.includes(longNote.slice(-10)), "wrap keeps note tail");
+  assert.ok(
+    weatherIcons.some((icon) => wrapChunk[0].includes(icon)),
+    "first wrap line keeps weather icon",
+  );
+  for (const line of wrapChunk.slice(1)) {
+    assert.ok(
+      !weatherIcons.some((icon) => line.includes(icon)),
+      `continuation must not repeat icon: ${line}`,
+    );
+  }
+  emit("agent_end", { type: "agent_end", messages: [] });
 }
 
 {
@@ -876,7 +1177,7 @@ assert.doesNotMatch(src, /working:\s*"/);
     });
   }
   emit("agent_end", { type: "agent_end", messages: [] });
-  const entryMany = lastEntry;
+  const entryMany = lastProcessEntry;
   const collapsedMany = renderer(entryMany, { expanded: false }, theme).render(
     80,
   );
@@ -895,22 +1196,57 @@ assert.doesNotMatch(src, /working:\s*"/);
   // state.runId is "" after agent_end: ctrl+o targets the last process entry.
   {
     assert.equal(typeof ctx._input, "function", "ctrl+o input binding");
+    const release = "\x1b[111;5:3u";
+    assert.ok(isKeyRelease(release), "kitty release sequence");
+    assert.ok(matchesKey(release, "ctrl+o"), "release still matches ctrl+o");
+    const collapsedManyHeader = stripRenderDecorations(
+      renderer(entryMany, { expanded: false }, theme).render(80)[0] ?? "",
+    );
+    assert.match(
+      collapsedManyHeader,
+      /ctrl\+o 展开|ctrl\+o expand/,
+      `collapsed overflow must hint expand: ${collapsedManyHeader}`,
+    );
+    assert.doesNotMatch(
+      collapsedManyHeader,
+      /收起|collapse|展开\/收起|expand\/collapse/,
+      `collapsed hint must not say collapse: ${collapsedManyHeader}`,
+    );
     const collapsedLen = renderer(entryMany, { expanded: false }, theme).render(
       80,
     ).length;
+    // Kitty sends press and release; one keypress must toggle exactly once.
     ctx._input("\x0f");
-    const expandedLen = renderer(entryMany, { expanded: false }, theme).render(
-      80,
-    ).length;
+    ctx._input(release);
+    const expandedManyLines = renderer(
+      entryMany,
+      { expanded: false },
+      theme,
+    ).render(80);
+    const expandedManyHeader = stripRenderDecorations(
+      expandedManyLines[0] ?? "",
+    );
+    assert.match(
+      expandedManyHeader,
+      /ctrl\+o 收起|ctrl\+o collapse/,
+      `expanded overflow must hint collapse: ${expandedManyHeader}`,
+    );
+    assert.doesNotMatch(
+      expandedManyHeader,
+      /展开|expand/,
+      `expanded hint must not say expand: ${expandedManyHeader}`,
+    );
+    const expandedLen = expandedManyLines.length;
     assert.ok(
       expandedLen > collapsedLen,
-      "ctrl+o with empty runId must expand the last process entry",
+      "ctrl+o press+release must expand once, not toggle twice",
     );
     ctx._input("\x0f");
+    ctx._input(release);
     assert.equal(
       renderer(entryMany, { expanded: false }, theme).render(80).length,
       collapsedLen,
-      "second ctrl+o must restore the collapsed state",
+      "second ctrl+o press+release must restore the collapsed state",
     );
   }
 
@@ -925,7 +1261,7 @@ assert.doesNotMatch(src, /working:\s*"/);
     toolCallId: "live-1",
     args: { command: "true" },
   });
-  const entryLive = lastEntry;
+  const entryLive = lastProcessEntry;
   const liveComp = renderer(entryLive, { expanded: false }, theme);
   const realDateNow = Date.now;
   const fixedNow = 1_700_000_000_000;
@@ -999,6 +1335,71 @@ assert.doesNotMatch(src, /working:\s*"/);
     "second ctrl+o must collapse back to the original state",
   );
   emit("agent_end", { type: "agent_end", messages: [] });
+}
+
+{
+  const PROCESS_WIDGET_KEY = "pi-minimal-process";
+  const fakeCard = Object.create(ToolExecutionComponent.prototype);
+  fakeCard.expanded = true;
+  try {
+    fakeCard.render(80);
+  } catch {
+    // stub card has no constructor state; patch still records expanded
+  }
+  await Promise.resolve();
+  assert.deepEqual(
+    renderer(lastProcessEntry, { expanded: false }, theme).render(80),
+    [],
+    "toolsExpanded must hide the transcript process placeholder",
+  );
+  const docked = [...uiCalls]
+    .reverse()
+    .find((c) => c[0] === "setWidget" && c[1] === PROCESS_WIDGET_KEY);
+  assert.ok(docked, "toolsExpanded must call setWidget for the process dock");
+  assert.notEqual(docked[2], undefined, "dock setWidget must pass a factory");
+  assert.equal(
+    docked[3]?.placement,
+    "aboveEditor",
+    "process widget must use aboveEditor",
+  );
+  const dock = widgets.get(PROCESS_WIDGET_KEY);
+  assert.ok(dock && typeof dock.render === "function", "dock widget must render");
+  const dockLines = dock.render(80);
+  assert.ok(Array.isArray(dockLines), "widget render must return string[]");
+  assert.ok(
+    dockLines.length <= 10,
+    `widget lines must be ≤10, got ${dockLines.length}`,
+  );
+  assert.ok(dockLines.length >= 1, "widget must render the process box");
+
+  fakeCard.expanded = false;
+  try {
+    fakeCard.render(80);
+  } catch {
+    // stub card has no constructor state; patch still records collapsed
+  }
+  await Promise.resolve();
+  const cleared = [...uiCalls]
+    .reverse()
+    .find((c) => c[0] === "setWidget" && c[1] === PROCESS_WIDGET_KEY);
+  assert.equal(
+    cleared?.[2],
+    undefined,
+    "collapsing native tools must setWidget(key, undefined)",
+  );
+  assert.ok(
+    !widgets.has(PROCESS_WIDGET_KEY),
+    "process widget must be removed when collapsed",
+  );
+  const restoredDock = renderer(
+    lastProcessEntry,
+    { expanded: false },
+    theme,
+  ).render(80);
+  assert.ok(
+    restoredDock.length > 0,
+    "placeholder must resume rendering after native collapse",
+  );
 }
 
 console.log("self-check ok");
