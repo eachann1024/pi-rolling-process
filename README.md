@@ -6,11 +6,11 @@ Minimal mode for [Pi](https://pi.dev). Transcript order is user message → proc
 
 Supports box / panel / plain presets and four border styles; switch with `/process-style`.
 
-Height only grows: step rows are appended; the last line is a status row (braille spinner + `Thinking…` while running; `✅ Done · N steps` when finished). Elapsed time sits in the left duration column, not in the text. That avoids Pi's transcript follow-end re-latch, so you can scroll up during a run without being pulled back to the bottom.
+Height only grows: step rows are appended; the last line is a status row (braille spinner + `Thinking…` while running; `✅ Done · N steps` when finished). The header shows total elapsed as a bare duration (`5.1s`). Per-step duration stays in the left column, not in the row text. That avoids Pi's transcript follow-end re-latch, so you can scroll up during a run without being pulled back to the bottom. When more steps are hidden, the header adds `ctrl+o expand`; after expand it becomes `ctrl+o collapse`.
 
 ```text
 > User: look at the repo layout
-┌─ Minimal 2/2 · ctrl+o expand ctrl+alt+o raw expand ──────┐
+┌─ Minimal 2/2 · 5.1s ─────────────────────────────────────┐
 │  0.4s ✅ bash $ ls -la                                   │
 │  0.1s ✅ read package.json                               │
 │  0.2s ✅ skill browser-use/SKILL.md → 103 lines          │
@@ -21,7 +21,7 @@ Height only grows: step rows are appended; the last line is a status row (braill
 This is a Pi extension repo, ... (assistant reply)
 ```
 
-Each row = duration column (6 cols, right-aligned) + space + icon (width 2) + space + text. Step-row text is `kind detail`; status-row text is `Thinking…` (or the running tool's kind) while running, and `Done · N steps` when finished. Duration only appears in the left column. Finished status row example: `│  5.1s ✅ Done · 2 steps`.
+Each row = duration column (6 cols, right-aligned) + space + icon (width 2) + space + text. Step-row text is `kind detail`; status-row text is `Thinking…` (or the running tool's kind) while running, and `Done · N steps` when finished. Step duration only appears in the left column. Finished status row example: `│  5.1s ✅ Done · 2 steps`.
 
 Spinner: two braille cells form a 4×4 dot grid; 12 frames walk clockwise around the perimeter (`⠁⠀ ⠈⠀ ⠀⠁ ⠀⠈ ⠀⠐ ⠀⠠ ⠀⢀ ⠀⡀ ⢀⠀ ⡀⠀ ⠄⠀ ⠂⠀`), 100ms per frame. Icon column width 2, aligned with ✅. The timer runs only while the agent is running.
 
