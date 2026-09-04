@@ -45,6 +45,8 @@ const source = new URL("../extensions/footer-status.ts", import.meta.url);
 const extension = await import(pathToFileURL(source.pathname).href + `?${Date.now()}`);
 
 assert.equal(extension.DEFAULT_SETTINGS["mini-lens-ch-show"], true, "mini-lens-ch-show defaults to true");
+assert.equal(extension.DEFAULT_SETTINGS["mini-lens-session-tokens-show"], true, "session-token display defaults to true");
+assert.equal(extension.DEFAULT_SETTINGS["mini-lens-cache-tokens-show"], true, "cache-token display defaults to true");
 assert.equal(extension.DEFAULT_SETTINGS["mini-lens-speed-unit-show"], true, "speed-unit display defaults to true");
 assert.deepEqual(extension.parseSettings({ "mini-lens-ch-show": false }), {
   ...extension.DEFAULT_SETTINGS,
@@ -74,6 +76,13 @@ extension.default(pi);
 let footerFactory;
 let renders = 0;
 let usage = { tokens: 0, percent: 0, contextWindow: 1_000_000 };
+let branch = [{
+  type: "message",
+  message: {
+    role: "assistant",
+    usage: { input: 75_000, output: 10_000, cacheRead: 25_000, cacheWrite: 5_000, totalTokens: 115_000, cost: { total: 0.01234 } },
+  },
+}];
 const ctx = {
   mode: "print",
   hasUI: false,
@@ -82,7 +91,7 @@ const ctx = {
   getContextUsage() { return usage; },
   sessionManager: {
     getBranch() {
-      return [{ type: "message", message: { role: "assistant", usage: { cost: { total: 0.01234 } } } }];
+      return branch;
     },
   },
   ui: { setFooter(factory) { footerFactory = factory; }, notify() {} },
@@ -98,6 +107,9 @@ let lines = footer.render(100);
 assert.equal(lines.length, 1, "footer always renders one line");
 assert.match(lines[0], /^deepseek-v4-flash  high/, "README example model is displayed generically");
 assert.doesNotMatch(lines[0], /deepseek\//, "provider prefix is omitted from the model label");
+assert.ok(lines[0].includes("Σ 115K"), "footer shows provider-reported cumulative session tokens");
+assert.ok(lines[0].includes("cache 30K"), "footer shows cumulative cache read and write tokens");
+assert.match(lines[0], /ch 25\.0%/, "footer shows cumulative cache-hit rate");
 assert.ok(lines[0].includes("0/1.0M"), "middle shows used tokens and context total");
 assert.match(lines[0], /0%$/, "without a speed sample, context percentage remains rightmost");
 assert.doesNotMatch(lines[0], /--|tok\/s/, "without a speed sample, speed is hidden rather than rendered as a placeholder");
@@ -124,28 +136,44 @@ now = 3_500;
 handlers.get("message_update")({ assistantMessageEvent: { partial: { usage: { output: 60 } } } }, ctx);
 now = 2_500;
 handlers.get("message_update")({ assistantMessageEvent: { partial: { usage: { output: 100 } } } }, ctx);
-Date.now = originalNow;
-lines = footer.render(100);
-assert.match(lines[0], /30\.0 tok\/s$/, "generation speed is the cumulative average from the first to latest valid output sample and ignores regressing output or time");
-assert.ok(colorTexts.some(([color, text]) => color === "success" && text === "30.0 tok/s"), "fast speed uses success semantic color");
+now = 3_000;
+lines = footer.render(140);
+assert.match(lines[0], /35\.0 tok\/s$/, "streaming speed uses all generated tokens divided by elapsed response time and ignores regressing samples");
+assert.ok(colorTexts.some(([color, text]) => color === "success" && text === "35.0 tok/s"), "live speed uses semantic threshold colors");
 assert.equal(extension.speedColor(30), "success", "fast threshold is success");
 assert.equal(extension.speedColor(10), "warning", "medium threshold is warning");
 assert.equal(extension.speedColor(9.9), "error", "slow speed is error");
 assert.equal(extension.speedColor(undefined), "muted", "missing speed is muted");
-assert.match(lines[0], /ch 25\.0%/, "cache hit is visible by default");
 handlers.get("message_end")({ message: { role: "assistant", usage: { output: 70, input: 75_000, cacheRead: 25_000 } } }, ctx);
-lines = footer.render(100);
-assert.match(lines[0], /30\.0 tok\/s$/, "message_end preserves the completed turn's average speed and ignores duplicate usage");
+lines = footer.render(140);
+assert.match(lines[0], /35\.0 tok\/s$/, "final usage retains the completed response rate");
+handlers.get("message_start")({ message: { role: "assistant" } }, ctx);
+lines = footer.render(140);
+assert.match(lines[0], /35\.0 tok\/s$/, "a tool-call-only or waiting assistant message does not erase the completed rate");
+now = 5_000;
+handlers.get("tool_execution_start")({ toolCallId: "child" }, ctx);
+now = 7_000;
+handlers.get("tool_execution_end")({ toolCallId: "child", result: { usage: { output: 80 } } }, ctx);
+lines = footer.render(140);
+assert.match(lines[0], /40\.0 tok\/s$/, "nested tool or child-agent usage uses its tool execution duration");
+branch = [...branch, { type: "message", message: { role: "toolResult", usage: { input: 50_000, output: 80, cacheRead: 10_000, cacheWrite: 0, totalTokens: 60_080, cost: { total: 0.01 } } } }];
+const totals = extension.sessionUsage(ctx);
+assert.deepEqual(totals, { totalTokens: 175_080, input: 125_000, output: 10_080, cacheRead: 35_000, cacheWrite: 5_000, cost: 0.02234 }, "session totals aggregate finalized assistant and nested tool usage exactly once");
+Date.now = originalNow;
 
+const sampleTotals = { totalTokens: 100_000, input: 75_000, output: 10_000, cacheRead: 25_000, cacheWrite: 0, cost: 0.01234 };
 const withoutCache = { ...extension.DEFAULT_SETTINGS, "mini-lens-ch-show": false };
-const hiddenCacheLine = extension.statusLine(ctx, theme, 100, 25, 0.01234, withoutCache, 40);
+const hiddenCacheLine = extension.statusLine(ctx, theme, 140, sampleTotals, withoutCache, 40);
 assert.doesNotMatch(hiddenCacheLine, /ch 25\.0%/, "mini-lens-ch-show false immediately hides cache hit");
+const withoutSessionTotals = { ...extension.DEFAULT_SETTINGS, "mini-lens-session-tokens-show": false, "mini-lens-cache-tokens-show": false };
+const hiddenTotalsLine = extension.statusLine(ctx, theme, 140, sampleTotals, withoutSessionTotals, 40);
+assert.doesNotMatch(hiddenTotalsLine, /Σ 100K|cache 25K/, "session-token and cache-token settings independently hide their metrics");
 const withoutSpeedUnit = { ...extension.DEFAULT_SETTINGS, "mini-lens-speed-unit-show": false };
-const noUnitLine = extension.statusLine(ctx, theme, 100, 25, 0.01234, withoutSpeedUnit, 40);
+const noUnitLine = extension.statusLine(ctx, theme, 140, sampleTotals, withoutSpeedUnit, 40);
 assert.match(noUnitLine, /40\.0$/, "speed-unit setting shows only the numeric speed when disabled");
 assert.doesNotMatch(noUnitLine, /tok\/s/, "speed-unit setting removes tok/s from the footer");
 const hiddenEverything = Object.fromEntries(Object.keys(extension.DEFAULT_SETTINGS).map((id) => [id, false]));
-assert.equal(extension.statusLine(ctx, theme, 100, 25, 0.01234, hiddenEverything, 40), "", "all footer fields can be disabled");
+assert.equal(extension.statusLine(ctx, theme, 140, sampleTotals, hiddenEverything, 40), "", "all footer fields can be disabled");
 
 ctx.model = { provider: "openai", id: "gpt-5", contextWindow: 200_000 };
 let settingsPanel;
@@ -163,10 +191,12 @@ await commands.get("mini-lens-settings").handler("", settingsCtx);
 const settingsChildren = settingsPanel.render(100);
 const settingsPreview = settingsChildren[2];
 const settingsList = settingsChildren[3];
-assert.match(settingsPreview.text, /deepseek-v4-flash  high  ch 98\.5%.*500\/1\.0M.*120 tok\/s/, "settings preview uses fixed example data instead of the current session");
+assert.match(settingsPreview.text, /deepseek-v4-flash  high  Σ 45K  cache 25K  ch 40\.0%.*500\/1\.0M.*120 tok\/s/, "settings preview uses fixed example data instead of the current session");
 assert.doesNotMatch(settingsPreview.text, /25\.0%|50K\/100K|gpt-5/, "settings preview never reads live session values");
+settingsList.setValue("mini-lens-cache-tokens-show", "off");
+assert.doesNotMatch(settingsPreview.text, /cache 25K/, "changing the cache-token setting updates the preview immediately");
 settingsList.setValue("mini-lens-ch-show", "off");
-assert.doesNotMatch(settingsPreview.text, /ch 98\.5%/, "changing the cache setting updates the preview immediately");
+assert.doesNotMatch(settingsPreview.text, /ch 40\.0%/, "changing the cache-rate setting updates the preview immediately");
 settingsList.setValue("mini-lens-speed-unit-show", "off");
 assert.match(settingsPreview.text, /120$/, "changing the unit setting updates the preview immediately");
 assert.doesNotMatch(settingsPreview.text, /tok\/s/, "disabled speed unit is absent from the updated preview");
@@ -176,6 +206,7 @@ for (const width of [40, 20, 8, 3]) {
   assert.equal(lines.length, 1, `width ${width} remains a single-line footer`);
   assert.ok(lines[0].length <= width, `width ${width} never overflows`);
 }
+handlers.get("session_shutdown")({}, ctx);
 
 // A first interactive run previews enabled defaults, offers two explicit choices, and persists Keep defaults.
 const onboardingDir = await mkdtemp(join(tmpdir(), "mini-lens-onboarding-"));
@@ -198,7 +229,7 @@ const onboardingCtx = {
 };
 await onboardingHandlers.get("session_start")({}, onboardingCtx);
 assert.deepEqual(previews[0]?.[1], ["Keep defaults", "Configure now"], "onboarding offers explicit default and configure paths");
-assert.match(previews[0]?.[0] ?? "", /ch 98\.5%.*500\/1\.0M.*120 tok\/s/, "onboarding preview has realistic cache, context, and fast speed data");
+assert.match(previews[0]?.[0] ?? "", /Σ 45K  cache 25K  ch 40\.0%.*500\/1\.0M.*120 tok\/s/, "onboarding preview has realistic session, cache, context, and speed data");
 assert.equal(customCalls, 0, "Keep defaults does not force a settings dialog");
 const savedDefaults = (await onboardingExtension.loadSettings(onboardingExtension.settingsPath(onboardingDir))).settings;
 assert.deepEqual(savedDefaults, { ...onboardingExtension.DEFAULT_SETTINGS, onboardingCompleted: true }, "Keep defaults persists every enabled field and completes onboarding");

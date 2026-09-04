@@ -25,7 +25,9 @@
     "tui"
   ],
   "pi": {
-    "extensions": ["./extensions/footer-status.ts"]
+    "extensions": [
+      "./extensions/footer-status.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.84.0",
@@ -39,5 +41,11 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0",
+    "@types/node": "^26.4.1",
+    "typescript": "^5.9.3"
   }
 }
