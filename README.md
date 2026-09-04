@@ -2,42 +2,19 @@
 
 # pi-minimal-mode
 
-Minimal mode for [Pi](https://pi.dev). Transcript order is user message → process block → assistant reply. After the run the block stays in place.
+An inline process summary extension for [Pi](https://pi.dev) (Pi >= 0.84.0).
 
-Supports box / panel / plain presets and four border styles; switch with `/process-style`.
-
-Height only grows: step rows are appended; the last line is a status row (braille spinner + `Thinking…` while running; `✅ Done · N steps` when finished). The header shows total elapsed as a bare duration (`5.1s`). Per-step duration stays in the left column, not in the row text. That avoids Pi's transcript follow-end re-latch, so you can scroll up during a run without being pulled back to the bottom. When more steps are hidden, the header adds `ctrl+o expand`; after expand it becomes `ctrl+o collapse`.
+The extension adds nothing to a text-only turn: the transcript remains user message → final answer. When a tool or thinking event occurs, it appends one process entry between the user message and the final answer. The entry is a compact, non-floating disclosure summary.
 
 ```text
-> User: look at the repo layout
-┌─ Minimal 2/2 · 5.1s ─────────────────────────────────────┐
-│  0.4s ✅ bash $ ls -la                                   │
-│  0.1s ✅ read package.json                               │
-│  0.2s ✅ skill browser-use/SKILL.md → 103 lines          │
-│   22s ✅ subagent list → 14 lines                        │
-│  1.1s ✅ note Read browser skill, verify post first.     │
-│  3.2s ⠀⠐ Thinking…                                       │
-└──────────────────────────────────────────────────────────┘
-This is a Pi extension repo, ... (assistant reply)
+> User: inspect the repository
+
+▸ Completed · recent 6 records · ctrl+o expand
+
+The repository contains …
 ```
 
-Each row = duration column (6 cols, right-aligned) + space + icon (width 2) + space + text. Step-row text is `kind detail`; status-row text is `Thinking…` (or the running tool's kind) while running, and `Done · N steps` when finished. Step duration only appears in the left column. Finished status row example: `│  5.1s ✅ Done · 2 steps`.
-
-Spinner: two braille cells form a 4×4 dot grid; 12 frames walk clockwise around the perimeter (`⠁⠀ ⠈⠀ ⠀⠁ ⠀⠈ ⠀⠐ ⠀⠠ ⠀⢀ ⠀⡀ ⢀⠀ ⡀⠀ ⠄⠀ ⠂⠀`), 100ms per frame. Icon column width 2, aligned with ✅. The timer runs only while the agent is running.
-
-Requires Pi **>= 0.84.0**. Conflicts with `pi-compact-transcript` — uninstall that package first.
-
-npm currently publishes **1.0.5**. **1.3.0** is not on npm yet.
-
-## Appearance preview
-
-Collapse / expand:
-
-![Collapse and expand](docs/images/collapse-expand.png)
-
-Three presets (box / panel / plain):
-
-![box / panel / plain](docs/images/presets-box-panel-plain.png)
+Press `ctrl+o` or use `/process` to expand it. The expanded entry shows the most recent records, then a disclosure for any older records. All process UI text is English, including thinking and completion states. Process symbols are text glyphs (`✓`, `✗`, `!`, `▸`, `▾`), not emoji. Extension tool names remain unchanged (for example, `some_mcp_tool`).
 
 ## Install
 
@@ -47,146 +24,51 @@ pi install npm:pi-minimal-mode
 pi install git:github.com/eachann1024/pi-rolling-process
 ```
 
-Then `/reload`.
+Then run `/reload` in Pi.
 
 ## Development
 
-Install only the path copy. Keeping npm and local at the same time double-fires event handlers:
+Install only the path copy; installing npm and local copies together double-registers handlers:
 
 ```bash
 pi remove npm:pi-minimal-mode && pi install /path/to/pi-rolling-process
 ```
 
-After code changes, `/reload` in Pi.
+After source changes, use `/reload` in an already-open Pi session.
 
-- `npm run check` — `tsc` typecheck. `tsconfig.json` `paths` point at this machine's global Pi install; retarget them using `npm root -g`.
-- `npm test` — `node test/self-check.mjs`
+- `npm run check` — TypeScript typecheck
+- `npm test` — extension self-check
 
-## Shortcuts
+## Controls
 
-| Key | Action |
+| Input | Action |
 | --- | --- |
-| `ctrl+o` | Expand / collapse this process block |
+| `ctrl+o` | Expand or collapse the current process entry |
 | `/process` | Same as `ctrl+o` |
+| `/process 1-100` | Persist and apply the number of recent records (default: 6) |
+| `/process-native` | Report whether native tool cards are hidden |
+| `/process-native on` | Hide native Pi tool cards immediately (default) |
+| `/process-native off` | Show native Pi tool cards immediately |
 
-This extension occupies `ctrl+o`, which Pi also uses for `app.tools.expand` (native tool dump). Remap that in `~/.pi/agent/keybindings.json`:
+`ctrl+o` may conflict with Pi's native tool expansion binding. If needed, remap `app.tools.expand` in `~/.pi/agent/keybindings.json`.
 
-```json
-{
-  "app.tools.expand": "ctrl+alt+o"
-}
-```
+## Configuration
 
-With `hideNativeTools: true` (default), all tool cards (including other extensions' and MCP tools) are hidden while collapsed. Use `app.tools.expand` to show the original cards.
-
-## Commands
-
-```text
-/process                         expand / collapse
-/process-lines 10                collapsed row count (1–20, default 10)
-/process-lang auto               auto | zh | en
-/process-native                  show whether native tool blocks are hidden
-/process-native on|off           hide (on, default) or show (off); takes effect immediately
-```
-
-`/process-style`:
-
-| Usage | Effect |
-| --- | --- |
-| `/process-style` | Show current style (`preset · border …`) |
-| `/process-style box\|panel\|plain` | Set preset |
-| `/process-style border single\|rounded\|double\|none` | Set border (`none` draws no frame; same as plain for the frame) |
-
-No other `/process-style` subcommands. There is no `preset` keyword — the preset name is the first argument.
-
-`/process-native on` writes `hideNativeTools: true`; `off` writes `false`. Changes take effect immediately without `/reload`. With no argument, the command reports the current value.
-
-## Config
-
-`~/.pi/agent/rolling-process.json`
+The plugin stores only its settings in `~/.pi/agent/rolling-process.json`:
 
 ```json
 {
-  "maxVisibleLines": 10,
-  "locale": "auto",
+  "maxRecords": 6,
   "hideNativeTools": true,
   "hideWorkingIndicator": true,
-  "hideThinkingLabel": true,
-  "style": {
-    "preset": "box",
-    "border": "single",
-    "showHeader": true,
-    "showStepIndex": false,
-    "showKind": true,
-    "showDuration": true,
-    "showResult": true,
-    "icons": {
-      "done": "✅",
-      "error": "❌",
-      "running": "⠁",
-      "aborted": "⚠️"
-    },
-    "colors": {
-      "border": "border",
-      "header": "dim",
-      "kind": "muted",
-      "duration": "success",
-      "done": "success",
-      "error": "error",
-      "running": "warning",
-      "aborted": "warning",
-      "categories": {
-        "builtin": "muted",
-        "skill": "success",
-        "extension": "success",
-        "subagent": "accent",
-        "thought": "dim",
-        "note": "warning"
-      }
-    }
-  }
+  "hideThinkingLabel": true
 }
 ```
 
-`locale: "auto"` follows the system (`zh` / `en`). `/process-lang` overrides it.
+`hideNativeTools` defaults to `true`: native `ToolExecutionComponent` cards are suppressed at render time, while the inline process entry remains visible. `/process-native on|off` persists the setting and refreshes existing native cards immediately.
 
-`hideNativeTools` (default `true`) wraps `ToolExecutionComponent.prototype.render` at runtime so all tool cards are hidden while collapsed. Expanding with Pi's `app.tools.expand` shows the original cards. `/process-native on|off` writes this field and takes effect immediately.
+`hideWorkingIndicator` hides Pi's native `Working…` row by default. `hideThinkingLabel` clears Pi's native thinking label by default. Edit either setting and reload the extension to apply it.
 
-`hideWorkingIndicator` (default `true`) hides Pi's native `Working…` status row, because the process block already has its own status row. Config file only; takes effect after `/reload`. No slash command.
+## Categories
 
-`hideThinkingLabel` (default `true`) clears Pi's `Thinking…` label when thinking is hidden. Thinking itself is inserted into the process block as soon as thinking starts, and native thinking-only streaming is suppressed while compact so it does not flash below the block. Config file only; takes effect after `/reload`. No slash command.
-
-### Step categories
-
-Steps fall into six categories. Kind labels are colored by category (defaults below):
-
-![Step category colors](docs/images/step-categories.png)
-
-| Category | Default color | Label | Detail |
-| --- | --- | --- | --- |
-| `builtin` | `muted` | Tool kind (read, bash, edit, …) | Command / path / result |
-| `skill` | `success` | `skill` | Skill name and file (when read/bash/ls hits `/skills/`, `SKILL.md`, or `/.agents/`) |
-| `extension` | `success` | Raw tool name (e.g. `some_mcp_tool`; underscores kept) | Same as other extension tool cards |
-| `subagent` | `accent` | `subagent` | Subagent name and result |
-| `thought` | `dim` | `think` | Thought text |
-| `note` | `warning` | `note` | First line of assistant text emitted before a tool call |
-
-Override per category with `style.colors.categories`. Legacy `style.colors.kind` still applies as the `builtin` fallback.
-
-### Style
-
-| `preset` | |
-| --- | --- |
-| `box` | Line frame + header (default) |
-| `panel` | Solid tool-card background |
-| `plain` | No frame |
-
-![Four border styles](docs/images/borders-four.png)
-
-| `border` (box only) | `single` `┌` · `rounded` `╭` · `double` `╔` · `none` |
-
-Icons are characters. Default `icons.running` is `⠁` (from `DEFAULT_STYLE`). While a step or the status row is running, that column shows the 12-frame perimeter walk (`⠁⠀ ⠈⠀ ⠀⠁ ⠀⠈ ⠀⠐ ⠀⠠ ⠀⢀ ⠀⡀ ⢀⠀ ⡀⠀ ⠄⠀ ⠂⠀`, 100ms) instead of this configured glyph. `colors` are Pi theme names (`accent`, `success`, `error`, `warning`, `muted`, `dim`, `border`, …).
-
-## License
-
-MIT
+Expanded rows are colored by category: built-in tools use `muted`; skill and extension tools use `success`; subagents use `accent`; and thinking uses `warning`. A `read` of `SKILL.md` is categorized as a skill; extension tool names are displayed verbatim.
