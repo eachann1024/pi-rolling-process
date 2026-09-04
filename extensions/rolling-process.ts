@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { AssistantMessageComponent, getAgentDir, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
-import { Box, Container, isKeyRelease, matchesKey, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, Container, isKeyRelease, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const ENTRY_TYPE = "pi-rolling-process";
 const CONFIG_PATH = `${getAgentDir()}/rolling-process.json`;
@@ -87,7 +87,8 @@ function renderEntry(data: EntryData, theme: Theme): Component {
       const disclosure = data.expanded ? "▾" : "▸";
       const latest = data.latest || statusText(data);
       const processLine = `${theme.fg(statusColor(data), disclosure)} ${theme.fg("customMessageLabel", "Process")}  ${theme.fg("customMessageText", latest)}`;
-      body.addChild(new Text(truncateToWidth(processLine, contentWidth, "…"), 0, 0));
+      const processLines = data.expanded ? wrapTextWithAnsi(processLine, contentWidth) : [truncateToWidth(processLine, contentWidth, "…")];
+      for (const line of processLines) body.addChild(new Text(line, 0, 0));
 
       if (data.expanded) {
         for (const step of recent) {
@@ -146,6 +147,7 @@ function setNativeThinkingHidden(hidden: boolean) {
 function createExtension(pi: ExtensionAPI) {
   const config = loadConfig();
   let current: EntryData | undefined;
+  let processHidden = false;
   let inputDispose: (() => void) | undefined;
   let lastCtx: ExtensionContext | undefined;
   function refresh() {
@@ -167,7 +169,7 @@ function createExtension(pi: ExtensionAPI) {
     refresh();
   }
   function toggle() { if (current) { current.expanded = !current.expanded; refresh(); } }
-  pi.registerEntryRenderer<EntryData>(ENTRY_TYPE, (entry, _options, theme) => entry.data ? renderEntry(entry.data, theme) : undefined);
+  pi.registerEntryRenderer<EntryData>(ENTRY_TYPE, (entry, _options, theme) => !processHidden && entry.data ? renderEntry(entry.data, theme) : undefined);
   pi.registerCommand("process", {
     description: "Toggle process records or set the recent record count: /process [1-100]",
     handler: async (args, ctx) => {
@@ -196,35 +198,34 @@ function createExtension(pi: ExtensionAPI) {
     setNativeToolCardsHidden(config.hideNativeTools, ctx);
     inputDispose?.();
     inputDispose = ctx.ui.onTerminalInput((data) => {
-      if (isKeyRelease(data) || !matchesKey(data, "ctrl+o")) return;
+      if (isKeyRelease(data)) return;
+      if (matchesKey(data, "ctrl+alt+o")) {
+        processHidden = !processHidden;
+        setNativeToolCardsHidden(!processHidden, ctx);
+        setNativeThinkingHidden(!processHidden);
+        ctx.ui.setHiddenThinkingLabel(processHidden ? undefined : "");
+        ctx.ui.setWorkingVisible(processHidden);
+        refresh();
+        return { consume: true };
+      }
+      if (!matchesKey(data, "ctrl+o") || processHidden) return;
       toggle(); return { consume: true };
     });
   });
-  let speedTimer: ReturnType<typeof setInterval> | undefined;
   let lastProviderOutput = 0;
   const tokenWindow: Array<{ time: number; count: number }> = [];
   function updateSpeed(now = Date.now()) {
     if (!current || current.finished) return;
     while (tokenWindow.length && tokenWindow[0]!.time < now - 1000) tokenWindow.shift();
     current.tps = tokenWindow.length
-      ? 1000 * tokenWindow.reduce((sum, item) => sum + item.count, 0) / Math.max(50, now - tokenWindow[0]!.time)
+      ? 1000 * tokenWindow.reduce((sum, item) => sum + item.count, 0) / Math.max(100, now - tokenWindow[0]!.time)
       : undefined;
-    refresh();
-  }
-  function startSpeedTimer() {
-    if (speedTimer) return;
-    speedTimer = setInterval(() => updateSpeed(), 50);
-  }
-  function stopSpeedTimer() {
-    if (speedTimer) clearInterval(speedTimer);
-    speedTimer = undefined;
   }
   pi.on("agent_start", (_event, ctx) => {
     lastCtx = ctx;
     current = undefined;
     tokenWindow.length = 0;
     lastProviderOutput = 0;
-    startSpeedTimer();
   });
   function recordSpeed(delta: string, providerOutput?: number) {
     if (!current || current.finished) return;
@@ -262,7 +263,7 @@ function createExtension(pi: ExtensionAPI) {
   add({ id: event.toolCallId, name: event.toolName, category: category(event.toolName, args), status: "running", detail: toolDetail(event.toolName, args) });
 });
   pi.on("tool_execution_end", (event) => { const step = current?.steps.find((item) => item.id === event.toolCallId); if (step) { step.status = event.isError ? "error" : "done"; } refresh(); });
-  pi.on("agent_end", () => { stopSpeedTimer(); if (current) { current.finished = true; current.tps = undefined; current.latest = current.steps.some((step) => step.status === "error") ? "Failed" : "Completed"; for (const step of current.steps) if (step.status === "running") step.status = "aborted"; refresh(); } });
-  pi.on("session_shutdown", () => { stopSpeedTimer(); inputDispose?.(); inputDispose = undefined; lastCtx = undefined; });
+  pi.on("agent_end", () => { if (current) { current.finished = true; current.tps = undefined; current.latest = current.steps.some((step) => step.status === "error") ? "Failed" : "Completed"; for (const step of current.steps) if (step.status === "running") step.status = "aborted"; refresh(); } });
+  pi.on("session_shutdown", () => { inputDispose?.(); inputDispose = undefined; lastCtx = undefined; });
 }
 export default function (pi: ExtensionAPI) { createExtension(pi); }
