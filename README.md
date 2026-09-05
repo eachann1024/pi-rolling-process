@@ -1,28 +1,68 @@
-[简体中文](README.zh-CN.md)
+<p align="center">
+  <img src="assets/mini-lens-hero.png" alt="Mini Lens for Pi — Your session. In focus. A compact footer showing model, tokens, cache, cost, context and generation speed." width="100%">
+</p>
 
-# pi-mini-lens
+<p align="center">
+  <a href="README.zh-CN.md">简体中文</a> · <a href="#install">Install</a> · <a href="#make-it-yours">Settings</a> · <a href="https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763">Watch demo</a>
+</p>
 
-
-
-https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763
-
-
-
-A compact, configurable global footer for [Pi](https://pi.dev) (Pi >= 0.84.0). It replaces Pi's footer only; Pi's built-in tool and thinking views are unchanged.
-
-The footer can show the active model, thinking level, accumulated session tokens, cached tokens and cache-hit rate (`CH`), estimated session price, context tokens with a progress bar, context percentage, and generation speed. `deepseek/deepseek-v4-flash` is an example model label only—no provider or model is special-cased.
+A compact, configurable footer for [Pi](https://pi.dev). Your model, usage, cost estimate, context, and generation speed — at a glance.
 
 ## Install
 
 ```bash
 pi install npm:pi-mini-lens
-# or
-pi install git:github.com/eachann1024/pi-rolling-process
 ```
 
-Run `/reload` in Pi after installing or changing the source.
+Run `/reload` in Pi. Requires **Pi ≥ 0.84.0**.
 
-## First run and settings
+<details>
+<summary>Install from GitHub instead</summary>
+
+```bash
+pi install git:github.com/eachann1024/pi-mini-lens
+```
+
+</details>
+
+---
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Live session metrics
+
+- Model & thinking level
+- Session token totals
+- Cached tokens & hit rate
+- Estimated session cost
+- Context usage & progress
+- Latest generation speed
+
+</td>
+<td width="50%" valign="top">
+
+### Make it yours
+
+Choose the fields you need. Preview each change instantly, in your Pi theme.
+
+<a href="assets/mini-lens-settings.jpg"><img src="assets/mini-lens-settings.jpg" alt="Mini Lens settings in Pi's light theme, showing the live preview and field toggles. Click to view at full size." width="100%"></a>
+
+[Watch the settings demo](https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763)
+
+</td>
+</tr>
+</table>
+
+Customize with `/mini-lens-settings`. Changes take effect immediately.
+
+**Fits your terminal.** Follows your Pi theme and adapts to narrow widths. Only the footer changes; Pi's built-in tool and thinking views stay intact.
+
+## Reference
+
+<details>
+<summary><strong>First run & configuration</strong> — defaults, controls, and settings file</summary>
 
 On the first interactive TUI session, Mini Lens shows a preview with every field enabled by default:
 
@@ -80,7 +120,10 @@ Settings are stored globally at Pi's agent directory (normally `~/.pi/agent/mini
   - **Show tok/s unit** (`mini-lens-speed-unit-show`) is the indented sub-setting shown beneath **Show latest generation speed** in `/mini-lens-settings`. Turning it off keeps the speed number (for example `40.0`) and removes only `tok/s`.
   - The sub-setting is retained when generation speed itself is hidden.
 
-## Usage, speed, and price
+</details>
+
+<details>
+<summary><strong>How metrics work</strong> — tokens, cache, speed, and estimated price</summary>
 
 Session totals are aggregated from each finalized `assistant` and `toolResult` entry on the active session branch. This includes nested LLM work reported by tools (such as a child agent) exactly once. `Total` uses the provider's `totalTokens` when supplied; older/custom results without it fall back to the sum of input, output, cache-read, and cache-write tokens. `Cached` is cache-read + cache-write (included in Total); `CH` is cache-read / (input + cache-read). Only persisted finalized usage is counted, so stream updates cannot double count totals.
 
@@ -90,7 +133,10 @@ Before a measurable response exists, the speed field is absent entirely—Mini L
 
 The price is the same finalized active-branch usage and configured per-million-token rates. It is an estimate, not a provider invoice. In narrow terminals, the footer drops/truncates lower-priority content to remain one line without overflow.
 
-## Development
+</details>
+
+<details>
+<summary><strong>Development</strong> — local setup and checks</summary>
 
 Install only the local copy while developing; installing npm and local copies together double-registers the extension:
 
@@ -101,3 +147,9 @@ npm test
 ```
 
 After source changes, run `/reload` in an already-open Pi session. `npm run check` runs TypeScript checking and `npm test` runs the footer self-check.
+
+</details>
+
+---
+
+[MIT License](LICENSE) · Built for [Pi](https://pi.dev)

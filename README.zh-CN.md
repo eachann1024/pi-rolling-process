@@ -1,24 +1,68 @@
-[English](README.md)
+<p align="center">
+  <img src="assets/mini-lens-hero.png" alt="Mini Lens for Pi — 会话状态，一眼清晰。紧凑底栏呈现模型、Token、缓存、费用、上下文与生成速度。" width="100%">
+</p>
 
-# pi-mini-lens
+<p align="center">
+  <a href="README.md">English</a> · <a href="#安装">安装</a> · <a href="#按你所需">设置</a> · <a href="https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763">演示视频</a>
+</p>
 
-[观看设置演示视频](assets/mini-lens-settings.mp4)
-
-[Pi](https://pi.dev) 的紧凑、可配置全局底栏扩展（需要 Pi >= 0.84.0）。它只替换 Pi 的底栏；Pi 内置的工具和思考展示保持不变。
-
-底栏可显示当前模型、thinking level、会话累计 Token、缓存 Token 与缓存命中率（`CH`）、会话预估价格、带进度条的上下文 Token、上下文百分比和生成速度。`deepseek/deepseek-v4-flash` 只是模型标签示例，不会被硬编码或特殊处理。
+[Pi](https://pi.dev) 的紧凑、可配置底栏。模型、用量、预估费用、上下文与生成速度，一眼清晰。
 
 ## 安装
 
 ```bash
 pi install npm:pi-mini-lens
-# 或
-pi install git:github.com/eachann1024/pi-rolling-process
 ```
 
-安装或修改源码后，在 Pi 中执行 `/reload`。
+在 Pi 中执行 `/reload` 即可加载。需要 **Pi ≥ 0.84.0**。
 
-## 首次运行与设置
+<details>
+<summary>也可以从 GitHub 安装</summary>
+
+```bash
+pi install git:github.com/eachann1024/pi-mini-lens
+```
+
+</details>
+
+---
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 会话状态，尽在眼前
+
+- 模型与思考等级
+- 会话累计 Token
+- 缓存用量与命中率
+- 会话预估费用
+- 上下文占用与进度
+- 最近一次生成速度
+
+</td>
+<td width="50%" valign="top">
+
+### 按你所需
+
+自由选择显示字段。每次调整都有即时预览，并跟随你的 Pi 主题。
+
+<a href="assets/mini-lens-settings.jpg"><img src="assets/mini-lens-settings.jpg" alt="Pi 浅色主题下的 Mini Lens 设置界面，包含即时预览与字段开关。点击查看原图。" width="100%"></a>
+
+[观看设置演示](https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763)
+
+</td>
+</tr>
+</table>
+
+执行 `/mini-lens-settings` 自定义底栏，修改即时生效。
+
+**自然融入终端。** 跟随 Pi 主题，适配窄窗口。仅替换底栏，保留 Pi 内置的工具与思考展示。
+
+## 详细参考
+
+<details>
+<summary><strong>首次运行与配置</strong> — 默认值、操作方式和配置文件</summary>
 
 首次在交互式 TUI 会话运行时，Mini Lens 会展示所有字段默认开启的预览：
 
@@ -76,7 +120,10 @@ deepseek-v4-flash  high  Total 45K  Cached 25K  CH 40.0%  $0.012  500/1.0M  █�
   - **Show tok/s unit**（`mini-lens-speed-unit-show`）是 `/mini-lens-settings` 中 **Show latest generation speed** 下方缩进的次级设置。关闭后仍显示速度数值（例如 `40.0`），但去掉 `tok/s`。
   - 关闭生成速度主项时，子项值会被保留，但不会生效。
 
-## 用量、速度与价格
+</details>
+
+<details>
+<summary><strong>指标如何计算</strong> — Token、缓存、速度与预估费用</summary>
 
 会话累计值从当前会话分支上每个已完成的 `assistant` 和 `toolResult` 条目聚合。工具上报的嵌套 LLM 用量（例如子代理）也会恰好计入一次。`Total` 优先使用服务商上报的 `totalTokens`；旧版或自定义工具结果没有该字段时，回退为 input、output、cache-read、cache-write Token 之和。`Cached` 是 cache-read + cache-write，属于 Total 的一部分；`CH` 是 cache-read / (input + cache-read)。只统计已持久化的最终用量，因此流式更新不会重复累计。
 
@@ -86,7 +133,10 @@ assistant 流式输出期间，一旦同时有正数的累计 `usage.output` 和
 
 价格来自同一份当前分支最终用量和模型配置的每百万 Token 单价，是预估值而不是服务商账单。窄终端会降级或截断低优先级内容，以保持单行且不溢出。
 
-## 开发
+</details>
+
+<details>
+<summary><strong>开发</strong> — 本地安装与检查</summary>
 
 开发时只能安装本地副本；同时安装 npm 与本地副本会重复注册扩展：
 
@@ -97,3 +147,9 @@ npm test
 ```
 
 修改源码后，在已打开的 Pi 会话中执行 `/reload`。`npm run check` 做 TypeScript 检查，`npm test` 运行底栏自检。
+
+</details>
+
+---
+
+[MIT 许可证](LICENSE) · 为 [Pi](https://pi.dev) 而作
