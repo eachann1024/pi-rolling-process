@@ -164,6 +164,9 @@ Date.now = originalNow;
 
 const sampleTotals = { totalTokens: 100_000, input: 75_000, output: 10_000, cacheRead: 25_000, cacheWrite: 0, cost: 0.01234 };
 assert.equal(extension.DEFAULT_SETTINGS["mini-lens-context-dots-show"], false, "solid bar remains default");
+const missingContext = extension.statusLine({ ...ctx, model: undefined, thinkingLevel: undefined, getContextUsage: () => ({ contextWindow: 272_000 }) }, theme, 140, sampleTotals, extension.DEFAULT_SETTINGS, undefined);
+assert.doesNotMatch(missingContext, /\?|272K|no model|off|[█░⣿⣀]|tok\/s/, "missing fields hide without placeholders");
+assert.match(missingContext, /Total 100K/, "known usage stays visible");
 const dotted = { ...extension.DEFAULT_SETTINGS, "mini-lens-context-dots-show": true };
 const dottedLine = extension.statusLine(ctx, theme, 140, sampleTotals, dotted, 40);
 assert.match(dottedLine, /⣿+⣀+/, "dot-matrix bar renders filled and empty cells");

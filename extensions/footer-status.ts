@@ -163,7 +163,7 @@ function renderRight(
   highlighted?: keyof MiniLensSettings,
 ): string {
   const fields: string[] = [];
-  if (settings["mini-lens-context-percent-show"]) fields.push(highlighted === "mini-lens-context-percent-show" ? theme.bg("selectedBg", theme.fg("accent", theme.bold(percentText))) : theme.fg("accent", percentText));
+  if (settings["mini-lens-context-percent-show"] && percentText) fields.push(highlighted === "mini-lens-context-percent-show" ? theme.bg("selectedBg", theme.fg("accent", theme.bold(percentText))) : theme.fg("accent", percentText));
   if (settings["mini-lens-speed-show"] && speed !== undefined) {
     const text = formatSpeed(speed, settings["mini-lens-speed-unit-show"]);
     fields.push(highlighted === "mini-lens-speed-show" || highlighted === "mini-lens-speed-unit-show"
@@ -210,8 +210,8 @@ export function statusLine(
   const field = (id: keyof MiniLensSettings, color: Parameters<typeof theme.fg>[0], text: string) =>
     id === highlighted ? theme.bg("selectedBg", theme.fg("accent", theme.bold(text))) : theme.fg(color, text);
   if (width <= 0) return "";
-  const model = ctx.model?.id ?? "no model";
-  const thinking = ctx.thinkingLevel ?? "off";
+  const model = ctx.model?.id ?? "";
+  const thinking = ctx.thinkingLevel ?? "";
   const hit = cacheHit(usageTotals);
   const hitText = hit === undefined ? "" : `CH ${hit.toFixed(1)}%`;
   const cachedTokens = usageTotals.cacheRead + usageTotals.cacheWrite;
@@ -221,8 +221,9 @@ export function statusLine(
   const contextWindow = finiteNumber(contextUsage?.contextWindow);
   const rawPercent = finiteNumber(contextUsage?.percent);
   const percent = rawPercent === undefined ? undefined : Math.max(0, Math.min(100, rawPercent));
-  const percentText = percent === undefined ? "?%" : `${Math.round(percent)}%`;
-  const tokenText = `${tokens === undefined ? "?" : formatTokens(Math.max(0, tokens))}/${contextWindow === undefined ? "?" : formatTokens(Math.max(0, contextWindow))}`;
+  const percentText = percent === undefined ? "" : `${Math.round(percent)}%`;
+  const tokenText = tokens === undefined || contextWindow === undefined ? "" : `${formatTokens(Math.max(0, tokens))}/${formatTokens(Math.max(0, contextWindow))}`;
+  const showContext = settings["mini-lens-context-show"] && Boolean(tokenText);
 
   const right = renderRight(theme, settings, percentText, speed, highlighted);
   const rightWidth = visibleWidth(right);
@@ -234,8 +235,8 @@ export function statusLine(
   }
 
   const leftParts = [
-    settings["mini-lens-model-show"] && field("mini-lens-model-show", "accent", model),
-    settings["mini-lens-thinking-show"] && field("mini-lens-thinking-show", "muted", thinking),
+    settings["mini-lens-model-show"] && model && field("mini-lens-model-show", "accent", model),
+    settings["mini-lens-thinking-show"] && thinking && field("mini-lens-thinking-show", "muted", thinking),
     settings["mini-lens-session-tokens-show"] && field("mini-lens-session-tokens-show", "text", `Total ${formatTokens(usageTotals.totalTokens)}`),
     settings["mini-lens-cache-tokens-show"] && field("mini-lens-cache-tokens-show", "text", `Cached ${formatTokens(cachedTokens)}`),
     settings["mini-lens-ch-show"] && hitText && field("mini-lens-ch-show", "text", hitText),
@@ -249,10 +250,10 @@ export function statusLine(
     settings["mini-lens-ch-show"] && hitText,
     settings["mini-lens-cost-show"] && price,
   ].filter(Boolean).join("  ");
-  const leftBudget = Math.min(visibleWidth(unstyledLeft), Math.max(1, width - rightWidth - (settings["mini-lens-context-show"] ? 20 : 1)), Math.max(0, width - rightWidth - 1));
+  const leftBudget = Math.min(visibleWidth(unstyledLeft), Math.max(1, width - rightWidth - (showContext ? 20 : 1)), Math.max(0, width - rightWidth - 1));
   const left = leftParts.length > 0 ? truncateToWidth(leftParts.join("  "), leftBudget, "…") : "";
   const leftWidth = visibleWidth(left);
-  const middleBudget = settings["mini-lens-context-show"] ? Math.max(0, width - leftWidth - rightWidth - (left && right ? 4 : left || right ? 1 : 0)) : 0;
+  const middleBudget = showContext ? Math.max(0, width - leftWidth - rightWidth - (left && right ? 4 : left || right ? 1 : 0)) : 0;
 
   let middle = "";
   if (middleBudget > 0) {
