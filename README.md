@@ -2,7 +2,11 @@
 
 # pi-mini-lens
 
-[Watch the settings demo](assets/mini-lens-settings.mp4)
+
+
+https://github.com/user-attachments/assets/5f2f4816-45ed-4759-b035-d9ee59e8a763
+
+
 
 A compact, configurable global footer for [Pi](https://pi.dev) (Pi >= 0.84.0). It replaces Pi's footer only; Pi's built-in tool and thinking views are unchanged.
 
