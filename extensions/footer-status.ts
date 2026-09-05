@@ -1,5 +1,5 @@
 import { CONFIG_DIR_NAME, getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, type SettingItem, SettingsList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, type SettingItem, SettingsList, Text, type TuiMouseEvent, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,6 +14,7 @@ export interface MiniLensSettings {
   "mini-lens-cache-tokens-show": boolean;
   "mini-lens-cost-show": boolean;
   "mini-lens-context-show": boolean;
+  "mini-lens-context-dots-show": boolean;
   "mini-lens-context-percent-show": boolean;
   "mini-lens-speed-show": boolean;
   "mini-lens-speed-unit-show": boolean;
@@ -28,6 +29,7 @@ export const DEFAULT_SETTINGS: Readonly<MiniLensSettings> = {
   "mini-lens-cache-tokens-show": true,
   "mini-lens-cost-show": true,
   "mini-lens-context-show": true,
+  "mini-lens-context-dots-show": false,
   "mini-lens-context-percent-show": true,
   "mini-lens-speed-show": true,
   "mini-lens-speed-unit-show": true,
@@ -158,11 +160,15 @@ function renderRight(
   settings: MiniLensSettings,
   percentText: string,
   speed: number | undefined,
+  highlighted?: keyof MiniLensSettings,
 ): string {
   const fields: string[] = [];
-  if (settings["mini-lens-context-percent-show"]) fields.push(theme.fg("accent", percentText));
+  if (settings["mini-lens-context-percent-show"]) fields.push(highlighted === "mini-lens-context-percent-show" ? theme.bg("selectedBg", theme.fg("accent", theme.bold(percentText))) : theme.fg("accent", percentText));
   if (settings["mini-lens-speed-show"] && speed !== undefined) {
-    fields.push(theme.fg(speedColor(speed), formatSpeed(speed, settings["mini-lens-speed-unit-show"])));
+    const text = formatSpeed(speed, settings["mini-lens-speed-unit-show"]);
+    fields.push(highlighted === "mini-lens-speed-show" || highlighted === "mini-lens-speed-unit-show"
+      ? theme.bg("selectedBg", theme.fg("accent", theme.bold(text)))
+      : theme.fg(speedColor(speed), text));
   }
   return fields.join("  ");
 }
@@ -186,8 +192,9 @@ export function settingsPreviewLine(
   theme: ExtensionContext["ui"]["theme"],
   settings: MiniLensSettings,
   width = 140,
+  highlighted?: keyof MiniLensSettings,
 ): string {
-  return statusLine(SETTINGS_PREVIEW_CONTEXT, theme, width, SETTINGS_PREVIEW_USAGE, settings, 120);
+  return statusLine(SETTINGS_PREVIEW_CONTEXT, theme, width, SETTINGS_PREVIEW_USAGE, settings, 120, highlighted);
 }
 
 export function statusLine(
@@ -197,12 +204,16 @@ export function statusLine(
   usageTotals: SessionUsage,
   settings: MiniLensSettings,
   speed: number | undefined,
+  highlighted?: keyof MiniLensSettings,
 ): string {
+  if (highlighted === "mini-lens-context-dots-show") highlighted = "mini-lens-context-show";
+  const field = (id: keyof MiniLensSettings, color: Parameters<typeof theme.fg>[0], text: string) =>
+    id === highlighted ? theme.bg("selectedBg", theme.fg("accent", theme.bold(text))) : theme.fg(color, text);
   if (width <= 0) return "";
   const model = ctx.model?.id ?? "no model";
   const thinking = ctx.thinkingLevel ?? "off";
   const hit = cacheHit(usageTotals);
-  const hitText = hit === undefined ? "" : `ch ${hit.toFixed(1)}%`;
+  const hitText = hit === undefined ? "" : `CH ${hit.toFixed(1)}%`;
   const cachedTokens = usageTotals.cacheRead + usageTotals.cacheWrite;
   const price = usageTotals.cost > 0 ? formatUsd(usageTotals.cost) : "";
   const contextUsage = ctx.getContextUsage();
@@ -213,7 +224,7 @@ export function statusLine(
   const percentText = percent === undefined ? "?%" : `${Math.round(percent)}%`;
   const tokenText = `${tokens === undefined ? "?" : formatTokens(Math.max(0, tokens))}/${contextWindow === undefined ? "?" : formatTokens(Math.max(0, contextWindow))}`;
 
-  const right = renderRight(theme, settings, percentText, speed);
+  const right = renderRight(theme, settings, percentText, speed, highlighted);
   const rightWidth = visibleWidth(right);
   if (right && width <= rightWidth) {
     const compactRight = settings["mini-lens-speed-show"] && speed !== undefined
@@ -223,22 +234,22 @@ export function statusLine(
   }
 
   const leftParts = [
-    settings["mini-lens-model-show"] && theme.fg("accent", model),
-    settings["mini-lens-thinking-show"] && theme.fg("muted", thinking),
-    settings["mini-lens-session-tokens-show"] && theme.fg("muted", `Σ ${formatTokens(usageTotals.totalTokens)}`),
-    settings["mini-lens-cache-tokens-show"] && theme.fg("muted", `cache ${formatTokens(cachedTokens)}`),
-    settings["mini-lens-ch-show"] && hitText && theme.fg("muted", hitText),
-    settings["mini-lens-cost-show"] && price && theme.fg("muted", price),
+    settings["mini-lens-model-show"] && field("mini-lens-model-show", "accent", model),
+    settings["mini-lens-thinking-show"] && field("mini-lens-thinking-show", "muted", thinking),
+    settings["mini-lens-session-tokens-show"] && field("mini-lens-session-tokens-show", "text", `Total ${formatTokens(usageTotals.totalTokens)}`),
+    settings["mini-lens-cache-tokens-show"] && field("mini-lens-cache-tokens-show", "text", `Cached ${formatTokens(cachedTokens)}`),
+    settings["mini-lens-ch-show"] && hitText && field("mini-lens-ch-show", "text", hitText),
+    settings["mini-lens-cost-show"] && price && field("mini-lens-cost-show", "muted", price),
   ].filter((part): part is string => Boolean(part));
   const unstyledLeft = [
     settings["mini-lens-model-show"] && model,
     settings["mini-lens-thinking-show"] && thinking,
-    settings["mini-lens-session-tokens-show"] && `Σ ${formatTokens(usageTotals.totalTokens)}`,
-    settings["mini-lens-cache-tokens-show"] && `cache ${formatTokens(cachedTokens)}`,
+    settings["mini-lens-session-tokens-show"] && `Total ${formatTokens(usageTotals.totalTokens)}`,
+    settings["mini-lens-cache-tokens-show"] && `Cached ${formatTokens(cachedTokens)}`,
     settings["mini-lens-ch-show"] && hitText,
     settings["mini-lens-cost-show"] && price,
   ].filter(Boolean).join("  ");
-  const leftBudget = Math.min(visibleWidth(unstyledLeft), Math.max(1, Math.floor(width * 0.58)), Math.max(0, width - rightWidth - 1));
+  const leftBudget = Math.min(visibleWidth(unstyledLeft), Math.max(1, width - rightWidth - (settings["mini-lens-context-show"] ? 20 : 1)), Math.max(0, width - rightWidth - 1));
   const left = leftParts.length > 0 ? truncateToWidth(leftParts.join("  "), leftBudget, "…") : "";
   const leftWidth = visibleWidth(left);
   const middleBudget = settings["mini-lens-context-show"] ? Math.max(0, width - leftWidth - rightWidth - (left && right ? 4 : left || right ? 1 : 0)) : 0;
@@ -248,10 +259,12 @@ export function statusLine(
     const visibleToken = truncateToWidth(tokenText, middleBudget, "…");
     const visibleTokenWidth = visibleWidth(visibleToken);
     const barWidth = middleBudget - visibleTokenWidth - 1;
+    const filledCell = settings["mini-lens-context-dots-show"] ? "⣿" : "█";
+    const emptyCell = settings["mini-lens-context-dots-show"] ? "⣀" : "░";
     const bar = barWidth >= 2 && percent !== undefined
-      ? `${theme.fg("accent", "█".repeat(Math.round(barWidth * percent / 100)))}${theme.fg("borderMuted", "░".repeat(barWidth - Math.round(barWidth * percent / 100)))}`
+      ? `${field("mini-lens-context-show", "accent", filledCell.repeat(Math.round(barWidth * percent / 100)))}${field("mini-lens-context-show", "borderMuted", emptyCell.repeat(barWidth - Math.round(barWidth * percent / 100)))}`
       : "";
-    middle = `${theme.fg("muted", visibleToken)}${bar ? ` ${bar}` : ""}`;
+    middle = `${field("mini-lens-context-show", "muted", visibleToken)}${bar ? ` ${bar}` : ""}`;
   }
 
   const content = [left, middle].filter(Boolean).join("  ");
@@ -264,11 +277,12 @@ function settingsItems(settings: MiniLensSettings): SettingItem[] {
   const labels: Record<Exclude<keyof MiniLensSettings, "onboardingCompleted">, string> = {
     "mini-lens-model-show": "Show model",
     "mini-lens-thinking-show": "Show thinking level",
-    "mini-lens-ch-show": "Show session cache-hit rate (ch)",
-    "mini-lens-session-tokens-show": "Show session total tokens (Σ)",
+    "mini-lens-session-tokens-show": "Show total session tokens",
     "mini-lens-cache-tokens-show": "Show session cache tokens",
+    "mini-lens-ch-show": "Show cache hit rate (CH)",
     "mini-lens-cost-show": "Show session price",
     "mini-lens-context-show": "Show context tokens and progress bar",
+    "mini-lens-context-dots-show": "↳ Use dot-matrix progress bar",
     "mini-lens-context-percent-show": "Show context percentage",
     "mini-lens-speed-show": "Show latest generation speed",
     "mini-lens-speed-unit-show": "↳ Show tok/s unit",
@@ -276,6 +290,13 @@ function settingsItems(settings: MiniLensSettings): SettingItem[] {
   return (Object.keys(labels) as Array<Exclude<keyof MiniLensSettings, "onboardingCompleted">>).map((id) => ({
     id,
     label: labels[id],
+    description: id === "mini-lens-session-tokens-show"
+      ? "Total: all tokens used on the current session branch, including tool-reported LLM usage."
+      : id === "mini-lens-cache-tokens-show"
+        ? "Cached: cumulative cache-read + cache-write tokens (part of Total)."
+        : id === "mini-lens-ch-show"
+          ? "CH (cache hit): cache-read / (input + cache-read). Cache writes are not included in this rate."
+          : undefined,
     currentValue: settings[id] ? "on" : "off",
     values: ["on", "off"],
   }));
@@ -338,10 +359,20 @@ export default function (pi: ExtensionAPI) {
       container.addChild(new Text(theme.fg("accent", theme.bold("Mini Lens settings")), 1, 1));
       container.addChild(new Text(theme.fg("muted", "Preview (example data)"), 1, 0));
       container.addChild(preview);
+      const items = settingsItems(settings);
+      let highlighted: keyof MiniLensSettings | undefined;
       const settingsList = new SettingsList(
-        settingsItems(settings),
+        items,
         12,
-        getSettingsListTheme(),
+        {
+          ...getSettingsListTheme(),
+          cursor: theme.bg("selectedBg", theme.fg("accent", theme.bold("→ "))),
+          label: (text, selected) => {
+            if (selected) highlighted = items.find((item) => item.label === text.trimEnd())?.id as keyof MiniLensSettings | undefined;
+            return selected ? theme.bg("selectedBg", theme.fg("accent", theme.bold(text))) : theme.fg("text", text);
+          },
+          value: (text, selected) => selected ? theme.bg("selectedBg", theme.fg("accent", theme.bold(text))) : theme.fg("muted", text),
+        },
         (id, value) => {
           settings = { ...settings, [id]: value === "on", onboardingCompleted: true };
           preview.setText(settingsPreviewLine(theme, settings));
@@ -353,8 +384,15 @@ export default function (pi: ExtensionAPI) {
       );
       container.addChild(settingsList);
       return {
-        render: (width: number) => container.render(width),
+        render: (width: number) => {
+          // SettingsList exposes selection through its theme callback, including search and mouse navigation.
+          highlighted = undefined;
+          settingsList.render(width);
+          preview.setText(settingsPreviewLine(theme, settings, Math.max(0, width - 2), highlighted));
+          return container.render(width);
+        },
         invalidate: () => container.invalidate(),
+        handleMouse: (event: TuiMouseEvent) => container.handleMouse(event),
         handleInput: (data: string) => {
           settingsList.handleInput(data);
           tui.requestRender();
@@ -383,7 +421,7 @@ export default function (pi: ExtensionAPI) {
     refresh();
     if (!loaded.exists && ctx.mode === "tui" && ctx.hasUI) {
       const choice = await ctx.ui.select(
-        "Mini Lens preview\n\n  deepseek-v4-flash  high  Σ 45K  cache 25K  ch 40.0%  $0.012  500/1.0M  █░░░░░░░░░  1%  120 tok/s\n\nAll fields are enabled by default.",
+        "Mini Lens preview\n\n  deepseek-v4-flash  high  Total 45K  Cached 25K  CH 40.0%  $0.012  500/1.0M  █░░░░░░░░░  1%  120 tok/s\n\nAll fields are enabled by default.",
         ["Keep defaults", "Configure now"],
       );
       settings = { ...settings, onboardingCompleted: true };

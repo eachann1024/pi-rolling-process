@@ -30,8 +30,9 @@ export class Text {
   setText(text) { this.text = text; }
 }
 export class SettingsList {
-  constructor(items, _height, _theme, onChange) { this.items = items; this.onChange = onChange; }
+  constructor(items, _height, theme, onChange) { this.items = items; this.theme = theme; this.onChange = onChange; }
   handleInput() {}
+  render() { this.theme.label(this.items[0].label, true); return []; }
   setValue(id, value) { this.onChange(id, value); }
 }
 `;
@@ -100,16 +101,16 @@ await handlers.get("session_start")({}, ctx);
 assert.ok(footerFactory, "session_start installs the global footer");
 const colors = [];
 const colorTexts = [];
-const theme = { fg(color, text) { colors.push(color); colorTexts.push([color, text]); return text; }, bold(text) { return text; } };
+const theme = { bg(_color, text) { return text; }, fg(color, text) { colors.push(color); colorTexts.push([color, text]); return text; }, bold(text) { return text; } };
 const footer = footerFactory({ requestRender() { renders++; } }, theme, {});
 
 let lines = footer.render(100);
 assert.equal(lines.length, 1, "footer always renders one line");
 assert.match(lines[0], /^deepseek-v4-flash  high/, "README example model is displayed generically");
 assert.doesNotMatch(lines[0], /deepseek\//, "provider prefix is omitted from the model label");
-assert.ok(lines[0].includes("Σ 115K"), "footer shows provider-reported cumulative session tokens");
-assert.ok(lines[0].includes("cache 30K"), "footer shows cumulative cache read and write tokens");
-assert.match(lines[0], /ch 25\.0%/, "footer shows cumulative cache-hit rate");
+assert.ok(lines[0].includes("Total 115K"), "footer shows provider-reported cumulative session tokens");
+assert.ok(lines[0].includes("Cached 30K"), "footer shows cumulative cache read and write tokens");
+assert.match(lines[0], /CH 25\.0%/, "footer shows cumulative cache-hit rate");
 assert.ok(lines[0].includes("0/1.0M"), "middle shows used tokens and context total");
 assert.match(lines[0], /0%$/, "without a speed sample, context percentage remains rightmost");
 assert.doesNotMatch(lines[0], /--|tok\/s/, "without a speed sample, speed is hidden rather than rendered as a placeholder");
@@ -162,12 +163,18 @@ assert.deepEqual(totals, { totalTokens: 175_080, input: 125_000, output: 10_080,
 Date.now = originalNow;
 
 const sampleTotals = { totalTokens: 100_000, input: 75_000, output: 10_000, cacheRead: 25_000, cacheWrite: 0, cost: 0.01234 };
+assert.equal(extension.DEFAULT_SETTINGS["mini-lens-context-dots-show"], false, "solid bar remains default");
+const dotted = { ...extension.DEFAULT_SETTINGS, "mini-lens-context-dots-show": true };
+const dottedLine = extension.statusLine(ctx, theme, 140, sampleTotals, dotted, 40);
+assert.match(dottedLine, /⣿+⣀+/, "dot-matrix bar renders filled and empty cells");
+assert.doesNotMatch(dottedLine, /[█░]/, "dot-matrix mode replaces solid cells");
+assert.equal(extension.parseSettings({ "mini-lens-context-dots-show": "bad" })["mini-lens-context-dots-show"], false);
 const withoutCache = { ...extension.DEFAULT_SETTINGS, "mini-lens-ch-show": false };
 const hiddenCacheLine = extension.statusLine(ctx, theme, 140, sampleTotals, withoutCache, 40);
-assert.doesNotMatch(hiddenCacheLine, /ch 25\.0%/, "mini-lens-ch-show false immediately hides cache hit");
+assert.doesNotMatch(hiddenCacheLine, /CH 25\.0%/, "mini-lens-ch-show false immediately hides cache hit");
 const withoutSessionTotals = { ...extension.DEFAULT_SETTINGS, "mini-lens-session-tokens-show": false, "mini-lens-cache-tokens-show": false };
 const hiddenTotalsLine = extension.statusLine(ctx, theme, 140, sampleTotals, withoutSessionTotals, 40);
-assert.doesNotMatch(hiddenTotalsLine, /Σ 100K|cache 25K/, "session-token and cache-token settings independently hide their metrics");
+assert.doesNotMatch(hiddenTotalsLine, /Total 100K|Cached 25K/, "session-token and cache-token settings independently hide their metrics");
 const withoutSpeedUnit = { ...extension.DEFAULT_SETTINGS, "mini-lens-speed-unit-show": false };
 const noUnitLine = extension.statusLine(ctx, theme, 140, sampleTotals, withoutSpeedUnit, 40);
 assert.match(noUnitLine, /40\.0$/, "speed-unit setting shows only the numeric speed when disabled");
@@ -191,12 +198,19 @@ await commands.get("mini-lens-settings").handler("", settingsCtx);
 const settingsChildren = settingsPanel.render(100);
 const settingsPreview = settingsChildren[2];
 const settingsList = settingsChildren[3];
-assert.match(settingsPreview.text, /deepseek-v4-flash  high  Σ 45K  cache 25K  ch 40\.0%.*500\/1\.0M.*120 tok\/s/, "settings preview uses fixed example data instead of the current session");
+colors.length = 0;
+settingsList.theme.label("Focused option", true);
+settingsList.theme.value("off", true);
+assert.deepEqual(colors, ["accent", "accent"], "focused label and value use theme accent even when off");
+colors.length = 0;
+settingsList.theme.label("Normal option", false);
+assert.deepEqual(colors, ["text"], "unfocused labels are not highlighted");
+assert.match(settingsPreview.text, /deepseek-v4-flash  high  Total 45K  Cached 25K  CH 40\.0%.*500\/1\.0M.*120 tok\/s/, "settings preview uses fixed example data instead of the current session");
 assert.doesNotMatch(settingsPreview.text, /25\.0%|50K\/100K|gpt-5/, "settings preview never reads live session values");
 settingsList.setValue("mini-lens-cache-tokens-show", "off");
-assert.doesNotMatch(settingsPreview.text, /cache 25K/, "changing the cache-token setting updates the preview immediately");
+assert.doesNotMatch(settingsPreview.text, /Cached 25K/, "changing the cache-token setting updates the preview immediately");
 settingsList.setValue("mini-lens-ch-show", "off");
-assert.doesNotMatch(settingsPreview.text, /ch 40\.0%/, "changing the cache-rate setting updates the preview immediately");
+assert.doesNotMatch(settingsPreview.text, /CH 40\.0%/, "changing the cache-rate setting updates the preview immediately");
 settingsList.setValue("mini-lens-speed-unit-show", "off");
 assert.match(settingsPreview.text, /120$/, "changing the unit setting updates the preview immediately");
 assert.doesNotMatch(settingsPreview.text, /tok\/s/, "disabled speed unit is absent from the updated preview");
@@ -229,7 +243,7 @@ const onboardingCtx = {
 };
 await onboardingHandlers.get("session_start")({}, onboardingCtx);
 assert.deepEqual(previews[0]?.[1], ["Keep defaults", "Configure now"], "onboarding offers explicit default and configure paths");
-assert.match(previews[0]?.[0] ?? "", /Σ 45K  cache 25K  ch 40\.0%.*500\/1\.0M.*120 tok\/s/, "onboarding preview has realistic session, cache, context, and speed data");
+assert.match(previews[0]?.[0] ?? "", /Total 45K  Cached 25K  CH 40\.0%.*500\/1\.0M.*120 tok\/s/, "onboarding preview has realistic session, cache, context, and speed data");
 assert.equal(customCalls, 0, "Keep defaults does not force a settings dialog");
 const savedDefaults = (await onboardingExtension.loadSettings(onboardingExtension.settingsPath(onboardingDir))).settings;
 assert.deepEqual(savedDefaults, { ...onboardingExtension.DEFAULT_SETTINGS, onboardingCompleted: true }, "Keep defaults persists every enabled field and completes onboarding");
